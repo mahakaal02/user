@@ -76,6 +76,8 @@ class QwenReq(BaseModel):
     task: str = "reasoning"
     prompt: str | None = None
     text: str | None = None
+    market: str | None = None     # for task="relevance"
+    headline: str | None = None   # for task="relevance"
 
 
 @app.post("/qwen")
@@ -95,6 +97,15 @@ def qwen(req: QwenReq) -> dict:
         up = ("yes)" in t) or ("bullish" in t)
         return {"text": "looks like a solid yes here, momentum's there" if up
                 else "fading this one, no looks like better value"}
+    if req.task == "relevance":
+        # The news pipeline (sim/news_feed.py RelevanceFilter, backend=qwen) asks
+        # how relevant a headline is to a market, 0..1. A real Qwen/embeddings
+        # model judges this; heuristic fallback = market/headline token overlap.
+        import re as _re
+        mt = {w for w in _re.findall(r"[a-z0-9]+", (req.market or "").lower()) if len(w) > 2}
+        ht = {w for w in _re.findall(r"[a-z0-9]+", (req.headline or "").lower()) if len(w) > 2}
+        score = (len(mt & ht) / len(mt)) if mt else 0.0
+        return {"score": round(score, 3)}
     bullish = any(w in t for w in ("cut", "stimulus", "beat", "rally", "growth"))
     bearish = any(w in t for w in ("recession", "default", "selloff", "crash", "hike"))
     if bearish and not bullish:

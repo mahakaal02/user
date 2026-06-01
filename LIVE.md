@@ -95,9 +95,10 @@ python run_live.py
 - **Personalities** — each bot is assigned one (deterministically by user id) from
   `fleet.mix` (momentum / contrarian / news-reactive / overconfident / herd /
   noise), reusing the exact `intent()` logic from the offline simulator.
-- **Signals** — each market's title is run through the inference layer **once per
-  cycle** (shared across all bots — no per-bot inference), feeding the
-  news/overconfident personalities. Swap `inference.*_backend` to FinBERT/Qwen.
+- **Signals** — each market is driven by **real news** (see the pipeline below),
+  computed **once per cycle** and shared across all bots (no per-bot inference),
+  feeding the news/overconfident personalities. Swap `inference.*_backend` to
+  FinBERT/Qwen.
 - **Comments** — `comments.backend: template` (offline, human-like) or `llm`
   (set `qwen_url`; the reference server in `inference_server/server.py` serves a
   `comment` task). The line reflects the bot's actual stance.
@@ -108,6 +109,36 @@ python run_live.py
 - **New markets** — the runner re-polls `/api/internal/markets` every cycle and
   auto-onboards anything new (initialises its history + signal), so bots start
   trading freshly-created markets automatically.
+
+---
+
+## Real news pipeline (`sim/news_feed.py`)
+
+Each market is driven by actual news, not its title alone:
+
+```
+market title → QueryBuilder → Google News RSS (primary, per-market query)
+            → BBC fallback feeds (stability layer, if Google is thin)
+            → RelevanceFilter (keyword | qwen) → build_signal_layer → bots
+```
+
+- **Google News RSS** is the primary source — a dynamic per-market query (e.g.
+  `Will OpenAI IPO this year?` → `OpenAI IPO year`), region-tuned via
+  `news_feed.google_news.{hl,gl,ceid}` (defaults to India).
+- **BBC feeds** are the stability layer (Reuters' own RSS is defunct), pulled
+  only when Google returns `< min_primary` hits and **strictly relevance-filtered**
+  so they don't add noise.
+- **Relevance filter** — `keyword` (token overlap, offline default) or `qwen`
+  (LLM judge / embeddings slot; set `relevance.qwen_url`, served by the reference
+  `inference_server` `relevance` task).
+- **Stdlib only** — RSS is fetched with `urllib` + parsed with `ElementTree`
+  (no `feedparser`). Every fetch degrades gracefully to the market title.
+- **Throttled + cached** — `cache_ttl_s` (re-fetch a market at most every N s) and
+  `max_fetch_per_cycle` (HTTP budget per cycle) keep the loop responsive at
+  1000 bots / dozens of markets.
+
+Toggle with `news_feed.enabled` (false → titles only). Verified live: real
+OpenAI-IPO, Bitcoin-$100k, and IPL-2026 headlines flowed into the signals.
 
 ---
 

@@ -18,6 +18,7 @@ import yaml
 
 from sim.config import _subst_env
 from sim.inference import build_inference_client
+from sim.news_feed import build_market_news_feed
 from sim.rng import RngHub
 
 from live.comment_gen import CommentGenerator
@@ -45,6 +46,7 @@ def main() -> None:
         qwen_url=cfg["comments"].get("qwen_url") or None,
     )
     inference = build_inference_client(cfg["inference"])
+    news_feed = build_market_news_feed(cfg.get("news_feed"))
     rng_hub = RngHub(int(cfg.get("seed", 7)))
 
     print(f"connecting to {ex['base_url']} …")
@@ -52,10 +54,16 @@ def main() -> None:
     print(f"  {len(users)} bot users on the exchange")
     markets = client.list_markets()
     print(f"  {len(markets)} open markets")
+    if news_feed is not None:
+        nf = cfg["news_feed"]
+        print(f"  news: Google News ({nf.get('google_news', {}).get('gl', 'US')}) "
+              f"+ {len(news_feed.fallback_feeds)} fallback feeds, relevance={nf.get('relevance', {}).get('backend', 'keyword')}")
+    else:
+        print("  news: disabled (market titles only)")
     if not users:
         raise SystemExit("No bot users — seed them first: (in bet/bet) npx tsx scripts/seed-bots.ts")
 
-    runner = FleetRunner(client, comment_gen, inference, cfg, rng_hub)
+    runner = FleetRunner(client, comment_gen, inference, cfg, rng_hub, news_feed=news_feed)
     runner.run(cycles=1 if args.once else args.cycles)
 
 

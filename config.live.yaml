@@ -41,4 +41,25 @@ comments:
   backend: template            # template (offline) | llm (Qwen one-liners)
   qwen_url: "${QWEN_URL:-}"     # set to use the LLM for comments
 
+news_feed:                     # REAL news → per-market signal pipeline
+  enabled: true                # false = market titles only (previous behaviour)
+  google_news:                 # PRIMARY: dynamic per-market query
+    hl: en-IN                  # language (markets here are India-heavy)
+    gl: IN                     # country
+    ceid: "IN:en"
+  fallback_feeds:              # STABILITY LAYER — live, reliable (Reuters RSS is defunct, so BBC)
+    - https://feeds.bbci.co.uk/news/world/rss.xml
+    - https://feeds.bbci.co.uk/news/business/rss.xml
+    - https://feeds.bbci.co.uk/news/technology/rss.xml
+  relevance:
+    backend: keyword           # keyword (offline) | qwen (LLM judge — set qwen_url)
+    threshold: 0.34            # min query-term overlap for fallback headlines
+    apply_to_primary: false    # trust Google's ranking for primary hits
+    qwen_url: "${QWEN_URL:-}"
+  max_items: 5                 # headlines per market fed to the signal engine
+  min_primary: 2               # fewer than this many Google hits → pull fallback feeds
+  cache_ttl_s: 300             # re-fetch a market's news at most every 5 min
+  max_fetch_per_cycle: 8       # HTTP fetch budget per cycle (keeps the loop snappy)
+  timeout_s: 6
+
 seed: 7

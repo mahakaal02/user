@@ -86,19 +86,21 @@ class LiveBot:
 
 
 class FleetRunner:
-    def __init__(self, client: KalkiClient, comment_gen: CommentGenerator, inference, cfg, rng_hub) -> None:
+    def __init__(self, client: KalkiClient, comment_gen: CommentGenerator, inference, cfg, rng_hub, news_feed=None) -> None:
         self.client = client
         self.comment_gen = comment_gen
         self.inference = inference
         self.cfg = cfg
         self.rng_hub = rng_hub
+        self.news_feed = news_feed                 # MarketNewsFeed or None (→ title-only)
         self.bots: list[LiveBot] = []
         self.bots_by_id: dict[str, LiveBot] = {}
         self.hist: dict[str, deque] = {}           # market_id -> price history
         self.signals: dict[str, object] = {}       # market_id -> shared SignalLayer
         self.titles: dict[str, str] = {}
+        self._market_news: dict[str, list] = {}    # market_id -> real headlines (latest)
         self._seen_markets: set[str] = set()
-        self.stats = {"trades": 0, "comments": 0, "rejects": 0, "cycles": 0}
+        self.stats = {"trades": 0, "comments": 0, "rejects": 0, "cycles": 0, "news_markets": 0}
 
     # -- setup ------------------------------------------------------------- #
     def setup(self) -> None:
@@ -122,6 +124,8 @@ class FleetRunner:
     def refresh_markets(self, cycle: int) -> list[dict]:
         markets = self.client.list_markets()
         refresh_every = self.cfg["pacing"].get("signal_refresh_cycles", 5)
+        fetch_budget = self.cfg.get("news_feed", {}).get("max_fetch_per_cycle", 6)
+        fetched = 0
         for m in markets:
             mid = m["id"]
             self.hist.setdefault(mid, deque(maxlen=64)).append(m["yesPrice"])
@@ -129,9 +133,24 @@ class FleetRunner:
             if mid not in self._seen_markets:
                 self._seen_markets.add(mid)
                 print(f"  + onboarded market '{m['title'][:48]}' ({mid[:8]}) @ {m['yesPrice']:.3f}")
-            # Shared per-market inference signal (computed once, used by all bots).
             if mid not in self.signals or cycle % refresh_every == 0:
-                self.signals[mid] = build_signal_layer(cycle, [m["title"]], self.inference, m["yesPrice"])
+                # Real-news pipeline: market title → Google News → BBC fallback →
+                # relevance filter. Throttled by an HTTP budget per cycle; cached
+                # with a TTL; falls back to the market title if news is empty.
+                headlines = [m["title"]]
+                if self.news_feed is not None:
+                    needs = self.news_feed.needs_fetch(m["title"], m.get("category"))
+                    allow = needs and fetched < fetch_budget
+                    real = self.news_feed.headlines_for(m["title"], m.get("category"), allow_fetch=allow)
+                    if needs and allow:
+                        fetched += 1
+                    if real:
+                        if mid not in self._market_news:
+                            self.stats["news_markets"] += 1
+                        headlines = real
+                        self._market_news[mid] = real
+                # Shared per-market inference signal (computed once, used by all bots).
+                self.signals[mid] = build_signal_layer(cycle, headlines, self.inference, m["yesPrice"])
         return markets
 
     def _view(self, m: dict, cycle: int) -> MarketView:
@@ -219,8 +238,9 @@ class FleetRunner:
                 self.stats["cycles"] += 1
                 if cycle % 5 == 0 or cycles is not None:
                     avg = sum(b.balance for b in self.bots) / len(self.bots)
-                    print(f"cycle {cycle:>4} · markets={len(markets)} · trades={self.stats['trades']} "
-                          f"comments={self.stats['comments']} rejects={self.stats['rejects']} avg_bal={avg:,.0f}")
+                    print(f"cycle {cycle:>4} · markets={len(markets)} · news={self.stats['news_markets']} "
+                          f"trades={self.stats['trades']} comments={self.stats['comments']} "
+                          f"rejects={self.stats['rejects']} avg_bal={avg:,.0f}")
                 cycle += 1
                 time.sleep(max(0.0, interval - (time.perf_counter() - t0)))
         except KeyboardInterrupt:
