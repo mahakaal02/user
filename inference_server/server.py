@@ -115,6 +115,55 @@ def qwen(req: QwenReq) -> dict:
     return {"event": "none", "impact": {}, "confidence": 0.3}
 
 
+# --------------------------------------------------------------------------- #
+#  Embeddings — the relevance cheap-filter's semantic backend
+# --------------------------------------------------------------------------- #
+class EmbedReq(BaseModel):
+    texts: list[str]
+
+
+_embedder = None
+
+
+def _load_embedder():
+    """Lazy-load a real sentence-embedding model; None if unavailable."""
+    global _embedder
+    if _embedder is not None:
+        return _embedder
+    try:  # real semantic model
+        from sentence_transformers import SentenceTransformer  # type: ignore
+
+        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    except Exception:  # pragma: no cover - heuristic fallback
+        _embedder = False
+    return _embedder
+
+
+def _hash_vec(text: str, dim: int = 384) -> list[float]:
+    import hashlib
+    import math
+    import re as _re
+
+    v = [0.0] * dim
+    for w in _re.findall(r"[a-z0-9]+", text.lower()):
+        h = int.from_bytes(hashlib.blake2b(("w:" + w).encode(), digest_size=8).digest(), "big")
+        v[h % dim] += 1.0 if (h >> 1) & 1 else -1.0
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v] if n else v
+
+
+@app.post("/embed")
+def embed_endpoint(req: EmbedReq) -> dict:
+    """POST {"texts": [...]} → {"vectors": [[...], ...]} (L2-normalized).
+    Uses a real model if sentence-transformers is installed; otherwise a
+    deterministic hashing vector so the relevance pipeline still runs."""
+    model = _load_embedder()
+    if model:
+        vecs = model.encode(req.texts, normalize_embeddings=True)
+        return {"vectors": [list(map(float, v)) for v in vecs]}
+    return {"vectors": [_hash_vec(t) for t in req.texts]}
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "finbert_loaded": bool(_finbert)}
+    return {"ok": True, "finbert_loaded": bool(_finbert), "embedder_loaded": bool(_embedder)}

@@ -31,6 +31,8 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from .embeddings import build_embedder, cosine
+
 _UA = "Mozilla/5.0 (compatible; KalkiNewsFleet/1.0)"
 
 # Question scaffolding + stopwords stripped when turning a market title into a query.
@@ -116,54 +118,83 @@ class QueryBuilder:
 
 
 class RelevanceFilter:
-    """Score a candidate headline's relevance to a market. Pluggable backend:
-    'keyword' (token overlap, default, offline) or 'qwen' (LLM judge, opt-in)."""
+    """Two-stage relevance:
+
+        RSS items → cheap filter (embeddings | keyword) → top-K → LLM refine → headlines
+
+    Stage 1 ranks ALL candidates cheaply (embeddings cosine, or keyword overlap)
+    and keeps the top-K. Stage 2 (optional) runs the LLM over ONLY those K to
+    refine — so the expensive model never sees more than a handful per market.
+    """
 
     def __init__(self, backend: str = "keyword", threshold: float = 0.34,
-                 qwen_url: str | None = None, timeout_s: float = 10.0) -> None:
-        self.backend = backend
-        self.threshold = threshold
-        self.qwen_url = qwen_url
+                 min_cosine: float = 0.15, top_k: int = 6, embedder=None,
+                 refine_enabled: bool = False, refine_qwen_url: str | None = None,
+                 refine_min_score: float = 0.5, timeout_s: float = 10.0) -> None:
+        self.backend = backend            # "embeddings" | "keyword"
+        self.threshold = threshold        # keyword floor
+        self.min_cosine = min_cosine      # embeddings floor
+        self.top_k = top_k
+        self.embedder = embedder
+        self.refine_enabled = refine_enabled
+        self.refine_qwen_url = refine_qwen_url
+        self.refine_min_score = refine_min_score
         self.timeout = timeout_s
 
     @staticmethod
     def _terms(text: str) -> set[str]:
-        # Exclude stopwords so the relevance denominator counts only meaningful
-        # terms (otherwise filler like "will/above/by" dilutes the score).
+        # Stopword-filtered so the keyword denominator counts only meaningful terms.
         return {w.lower() for w in _WORD.findall(text) if len(w) > 2 and w.lower() not in _QSTOP}
 
-    def _kw_score(self, qterms: set[str], text: str) -> float:
+    # -- stage 1: cheap filter --------------------------------------------- #
+    def _kw_scores(self, query: str, market_title: str, items: list[dict]) -> list[float]:
+        qterms = self._terms(query) | self._terms(market_title)
         if not qterms:
-            return 0.0
-        return len(qterms & self._terms(text)) / len(qterms)
+            return [0.0] * len(items)
+        return [len(qterms & self._terms(it["title"] + " " + it.get("summary", ""))) / len(qterms)
+                for it in items]
 
-    def _qwen_score(self, market_title: str, headline: str) -> float:
+    def _embed_scores(self, query: str, market_title: str, items: list[dict]) -> list[float]:
+        try:
+            texts = [f"{query} {market_title}"] + [it["title"] + " " + it.get("summary", "") for it in items]
+            vecs = self.embedder.embed(texts)
+            return [cosine(vecs[0], v) for v in vecs[1:]]
+        except Exception:  # any embedding failure → fall back to keyword scoring
+            return self._kw_scores(query, market_title, items)
+
+    # -- stage 2: LLM refinement (over the top-K only) --------------------- #
+    def _llm_refine(self, market_title: str, headline: str) -> float:
         try:
             payload = json.dumps({"task": "relevance", "market": market_title, "headline": headline}).encode()
-            req = urllib.request.Request(self.qwen_url, data=payload, method="POST",
+            req = urllib.request.Request(self.refine_qwen_url, data=payload, method="POST",
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                resp = json.loads(r.read() or b"{}")
-            return float(resp.get("score", 0.0))
+                return float(json.loads(r.read() or b"{}").get("score", 0.0))
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError):
-            return 0.0
+            return 1.0  # don't drop on refiner failure — keep the embedding pick
 
-    def filter(self, query: str, market_title: str, items: list[dict], max_items: int,
-               min_score: float | None = None) -> list[str]:
-        floor = self.threshold if min_score is None else min_score
-        qterms = self._terms(query) | self._terms(market_title)
-        scored: list[tuple[float, str]] = []
-        for it in items:
-            text = it["title"] + " " + it.get("summary", "")
-            score = self._kw_score(qterms, text)
-            if self.backend == "qwen" and self.qwen_url and score > 0:
-                score = self._qwen_score(market_title, it["title"])
-            if score >= floor:
-                scored.append((score, it["title"]))
-        scored.sort(key=lambda s: s[0], reverse=True)
-        # de-dupe preserving order
+    def rank(self, query: str, market_title: str, items: list[dict], max_items: int) -> list[str]:
+        if not items:
+            return []
+        if self.backend == "embeddings" and self.embedder is not None:
+            scores = self._embed_scores(query, market_title, items)
+            floor = self.min_cosine
+        else:
+            scores = self._kw_scores(query, market_title, items)
+            floor = self.threshold
+
+        top = sorted(((s, it) for s, it in zip(scores, items) if s >= floor),
+                     key=lambda x: x[0], reverse=True)[: self.top_k]
+
+        if self.refine_enabled and self.refine_qwen_url and top:
+            kept = [(self._llm_refine(market_title, it["title"]), it) for _, it in top]
+            kept = [(s, it) for s, it in kept if s >= self.refine_min_score]
+            if kept:  # if the refiner rejects everything, keep the embedding top-K
+                top = sorted(kept, key=lambda x: x[0], reverse=True)
+
         out, seen = [], set()
-        for _, t in scored:
+        for _, it in top:
+            t = it["title"]
             if t.lower() not in seen:
                 seen.add(t.lower())
                 out.append(t)
@@ -178,8 +209,7 @@ class MarketNewsFeed:
     def __init__(self, *, hl: str = "en-US", gl: str = "US", ceid: str = "US:en",
                  fallback_feeds: list[str] | None = None, relevance: RelevanceFilter | None = None,
                  max_items: int = 5, min_primary: int = 2, cache_ttl_s: float = 300.0,
-                 timeout_s: float = 6.0, apply_relevance_to_primary: bool = False,
-                 now_fn=None) -> None:
+                 timeout_s: float = 6.0, now_fn=None) -> None:
         self.hl, self.gl, self.ceid = hl, gl, ceid
         self.fallback_feeds = fallback_feeds if fallback_feeds is not None else list(_DEFAULT_FALLBACK)
         self.relevance = relevance or RelevanceFilter()
@@ -187,7 +217,6 @@ class MarketNewsFeed:
         self.min_primary = min_primary
         self.cache_ttl_s = cache_ttl_s
         self.timeout = timeout_s
-        self.apply_relevance_to_primary = apply_relevance_to_primary
         self.qb = QueryBuilder()
         self._now = now_fn or time.time
         self._cache: dict[str, tuple[float, list[str]]] = {}
@@ -219,46 +248,28 @@ class MarketNewsFeed:
         return headlines
 
     def _fetch(self, query: str, title: str) -> list[str]:
-        # 1) primary — Google News dynamic query
-        primary: list[str] = []
+        # 1) RSS — Google News primary (dynamic per-market query)...
+        candidates: list[dict] = []
         try:
             raw = _fetch_rss(self._google_url(query), self.timeout)
             self.stats["google_ok"] += 1
-            cleaned = [{"title": _clean_gnews_title(i["title"]), "summary": i.get("summary", "")} for i in raw]
-            if self.apply_relevance_to_primary:
-                primary = self.relevance.filter(query, title, cleaned, self.max_items, min_score=0.0001)
-            else:
-                # trust Google's ranking; just take the top, de-duped
-                seen: set[str] = set()
-                for c in cleaned:
-                    t = c["title"]
-                    if t and t.lower() not in seen:
-                        seen.add(t.lower())
-                        primary.append(t)
-                    if len(primary) >= self.max_items:
-                        break
+            candidates += [{"title": _clean_gnews_title(i["title"]), "summary": i.get("summary", "")} for i in raw]
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ET.ParseError, OSError):
             self.stats["google_fail"] += 1
 
-        if len(primary) >= self.min_primary:
-            return primary[: self.max_items]
+        # 2) ...adding the BBC stability feeds only when Google is thin.
+        if len(candidates) < self.min_primary:
+            before = len(candidates)
+            for url in self.fallback_feeds:
+                try:
+                    candidates += _fetch_rss(url, self.timeout)
+                except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ET.ParseError, OSError):
+                    continue
+            if len(candidates) > before:
+                self.stats["fallback_used"] += 1
 
-        # 2) stability fallback — BBC/Reuters feeds, strictly relevance-filtered
-        fb_items: list[dict] = []
-        for url in self.fallback_feeds:
-            try:
-                fb_items += _fetch_rss(url, self.timeout)
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ET.ParseError, OSError):
-                continue
-        fb = self.relevance.filter(query, title, fb_items, self.max_items)
-        if fb:
-            self.stats["fallback_used"] += 1
-        merged, seen = [], set()
-        for t in primary + fb:
-            if t.lower() not in seen:
-                seen.add(t.lower())
-                merged.append(t)
-        return merged[: self.max_items]
+        # 3) embeddings cheap-filter → top-K → (optional) LLM refine → headlines.
+        return self.relevance.rank(query, title, candidates, self.max_items)
 
 
 def build_market_news_feed(cfg: dict):
@@ -268,10 +279,19 @@ def build_market_news_feed(cfg: dict):
         return None
     g = cfg.get("google_news", {})
     rel_cfg = cfg.get("relevance", {})
+    emb_cfg = rel_cfg.get("embeddings", {})
+    refine_cfg = rel_cfg.get("refine", {})
+    backend = rel_cfg.get("backend", "embeddings")
+    embedder = build_embedder(emb_cfg) if backend == "embeddings" else None
     relevance = RelevanceFilter(
-        backend=rel_cfg.get("backend", "keyword"),
+        backend=backend,
         threshold=rel_cfg.get("threshold", 0.34),
-        qwen_url=rel_cfg.get("qwen_url") or None,
+        min_cosine=emb_cfg.get("min_cosine", 0.15),
+        top_k=emb_cfg.get("top_k", rel_cfg.get("top_k", 6)),
+        embedder=embedder,
+        refine_enabled=refine_cfg.get("enabled", False),
+        refine_qwen_url=refine_cfg.get("qwen_url") or None,
+        refine_min_score=refine_cfg.get("min_score", 0.5),
     )
     return MarketNewsFeed(
         hl=g.get("hl", "en-US"),
@@ -283,5 +303,4 @@ def build_market_news_feed(cfg: dict):
         min_primary=cfg.get("min_primary", 2),
         cache_ttl_s=cfg.get("cache_ttl_s", 300),
         timeout_s=cfg.get("timeout_s", 6),
-        apply_relevance_to_primary=rel_cfg.get("apply_to_primary", False),
     )

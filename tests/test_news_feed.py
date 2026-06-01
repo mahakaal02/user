@@ -63,9 +63,39 @@ def test_relevance_filter_keyword():
         {"title": "Mumbai Indians sign new player ahead of IPL 2026", "summary": ""},
         {"title": "Weather update: monsoon arrives early", "summary": ""},
     ]
-    out = rf.filter("Mumbai Indians IPL 2026", "Will Mumbai Indians win IPL 2026?", items, max_items=5)
+    out = rf.rank("Mumbai Indians IPL 2026", "Will Mumbai Indians win IPL 2026?", items, max_items=5)
     assert any("Mumbai Indians" in t for t in out)
     assert all("Weather" not in t for t in out)  # off-topic dropped
+
+
+def test_embedder_cosine():
+    from sim.embeddings import LocalHashingEmbedder, cosine
+    a, b, c = LocalHashingEmbedder().embed(["bitcoin price surge", "bitcoin price surge", "parking fees council"])
+    assert cosine(a, b) > 0.99           # identical text
+    assert cosine(a, c) < cosine(a, b)   # unrelated scores lower
+
+
+def test_embeddings_backend_ranks_and_respects_topk():
+    from sim.embeddings import LocalHashingEmbedder
+    rf = RelevanceFilter(backend="embeddings", min_cosine=0.0, top_k=2, embedder=LocalHashingEmbedder())
+    items = [
+        {"title": "Bitcoin rallies toward $100k milestone", "summary": ""},
+        {"title": "Local council debates parking fees", "summary": ""},
+        {"title": "Crypto markets: BTC nears $100,000", "summary": ""},
+    ]
+    out = rf.rank("Bitcoin $100k", "Will Bitcoin close above $100k?", items, max_items=5)
+    assert len(out) == 2                                   # top_k respected
+    assert all("parking" not in t.lower() for t in out)   # irrelevant ranked out
+
+
+def test_llm_refine_drops_low_scored_topk():
+    from sim.embeddings import LocalHashingEmbedder
+    rf = RelevanceFilter(backend="embeddings", min_cosine=-1.0, top_k=5, embedder=LocalHashingEmbedder(),
+                         refine_enabled=True, refine_qwen_url="http://stub", refine_min_score=0.5)
+    rf._llm_refine = lambda mt, h: 0.9 if "bitcoin" in h.lower() else 0.1  # stub the LLM judge
+    items = [{"title": "Bitcoin nears $100k", "summary": ""}, {"title": "Unrelated weather news", "summary": ""}]
+    out = rf.rank("Bitcoin $100k", "Will Bitcoin hit $100k?", items, max_items=5)
+    assert out == ["Bitcoin nears $100k"]                 # LLM refinement kept only the relevant one
 
 
 def test_feed_primary_trust_and_cache():

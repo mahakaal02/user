@@ -51,11 +51,18 @@ news_feed:                     # REAL news → per-market signal pipeline
     - https://feeds.bbci.co.uk/news/world/rss.xml
     - https://feeds.bbci.co.uk/news/business/rss.xml
     - https://feeds.bbci.co.uk/news/technology/rss.xml
-  relevance:
-    backend: keyword           # keyword (offline) | qwen (LLM judge — set qwen_url)
-    threshold: 0.34            # min query-term overlap for fallback headlines
-    apply_to_primary: false    # trust Google's ranking for primary hits
-    qwen_url: "${QWEN_URL:-}"
+  relevance:                   # RSS → embeddings cheap-filter → top-K → LLM refine → bots
+    backend: embeddings        # embeddings (cheap filter) | keyword (pure-offline fallback)
+    threshold: 0.34            # keyword-backend floor (token overlap), if backend=keyword
+    embeddings:
+      url: "${EMBED_URL:-}"    # remote SEMANTIC model (POST /embed → vectors); empty → local lexical hashing
+      top_k: 6                 # keep the top-K most relevant articles
+      min_cosine: 0.15         # drop candidates below this cosine similarity
+      dim: 512                 # local-hashing vector size (ignored when url is set)
+    refine:                    # stage 2: LLM refines ONLY the top-K (optional, off by default)
+      enabled: false
+      qwen_url: "${QWEN_URL:-}"
+      min_score: 0.5
   max_items: 5                 # headlines per market fed to the signal engine
   min_primary: 2               # fewer than this many Google hits → pull fallback feeds
   cache_ttl_s: 300             # re-fetch a market's news at most every 5 min

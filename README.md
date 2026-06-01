@@ -53,7 +53,8 @@ bots/
 │   ├── rng.py                 # seeded, reproducible random sub-streams
 │   ├── signals.py             # SignalLayer — shared per-tick inference output
 │   ├── news.py                # tick news feeds: synthetic / stored / rss
-│   ├── news_feed.py           # REAL per-market news: Google News + BBC + relevance filter
+│   ├── news_feed.py           # REAL per-market news: Google News + BBC + relevance pipeline
+│   ├── embeddings.py          # embeddings cheap-filter (remote semantic | local hashing)
 │   ├── metrics.py             # bubble/crash/herd detection + P&L + ASCII chart
 │   ├── inference/             # ── THE PLUGGABLE INFERENCE LAYER ──
 │   │   ├── base.py            #    InferenceClient ABC + standardized schemas

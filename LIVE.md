@@ -119,20 +119,27 @@ Each market is driven by actual news, not its title alone:
 ```
 market title → QueryBuilder → Google News RSS (primary, per-market query)
             → BBC fallback feeds (stability layer, if Google is thin)
-            → RelevanceFilter (keyword | qwen) → build_signal_layer → bots
+            → Embeddings cheap-filter → Top-K → LLM refine (optional) → build_signal_layer → bots
 ```
 
 - **Google News RSS** is the primary source — a dynamic per-market query (e.g.
-  `Will OpenAI IPO this year?` → `OpenAI IPO year`), region-tuned via
-  `news_feed.google_news.{hl,gl,ceid}` (defaults to India).
+  `Will OpenAI IPO this year?` → `OpenAI IPO year`; a generic sub-market `Spain`
+  inside `Who will win the 2026 FIFA World Cup?` → `Spain win FIFA World Cup`),
+  region-tuned via `news_feed.google_news.{hl,gl,ceid}` (defaults to India).
 - **BBC feeds** are the stability layer (Reuters' own RSS is defunct), pulled
-  only when Google returns `< min_primary` hits and **strictly relevance-filtered**
-  so they don't add noise.
-- **Relevance filter** — `keyword` (token overlap, offline default) or `qwen`
-  (LLM judge / embeddings slot; set `relevance.qwen_url`, served by the reference
-  `inference_server` `relevance` task).
-- **Stdlib only** — RSS is fetched with `urllib` + parsed with `ElementTree`
-  (no `feedparser`). Every fetch degrades gracefully to the market title.
+  only when Google returns `< min_primary` hits.
+- **Relevance — two stages** (`sim/embeddings.py` + `RelevanceFilter`):
+  1. **Embeddings cheap-filter** ranks *all* RSS candidates by cosine and keeps
+     the **top-K** (`relevance.backend: embeddings`). The embedder is **remote**
+     (a real semantic model at `relevance.embeddings.url`, served by the
+     reference `inference_server` `/embed` — catches paraphrase like "S-1 filing"
+     ↔ "IPO") or, with no url, a dependency-free **local lexical hashing** vector.
+     `keyword` (token overlap) remains as a pure-offline fallback.
+  2. **LLM refine (optional)** — `relevance.refine.enabled` runs Qwen over **only
+     the top-K** (≤ a handful of calls/market) to drop the stragglers; off by default.
+- **Stdlib only** — RSS via `urllib` + `ElementTree` (no `feedparser`); embeddings
+  via `urllib`. Every stage degrades gracefully (embed error → keyword; fetch
+  error → market title).
 - **Throttled + cached** — `cache_ttl_s` (re-fetch a market at most every N s) and
   `max_fetch_per_cycle` (HTTP budget per cycle) keep the loop responsive at
   1000 bots / dozens of markets.
