@@ -6,19 +6,68 @@ reacts to a shared news/inference signal and trades a binary YES/NO market,
 producing emergent **bubbles, crashes, herding, delayed news reaction and
 contrarian corrections**.
 
-All ML inference (sentiment + reasoning/event-extraction) lives behind **one
-pluggable interface** and is selected entirely from `config.yaml`. Bot logic
-never imports a model, an SDK, or a URL — swapping FinBERT/Qwen for anything
-else is a config edit, not a code change.
+All ML — sentiment, reasoning/event-extraction, **embeddings** (news relevance),
+and LLM comments — lives behind **pluggable interfaces** selected from config
+**or set live in the admin panel**. Bot logic never imports a model, an SDK, or a
+URL — swapping FinBERT / Qwen / an embedding model is a config (or one-click)
+change, not a code change. Everything has a zero-dependency local fallback, so it
+runs offline out of the box.
 
 > **Academic use only.** This studies prediction markets, behavioural economics
-> and agent-based trading dynamics. It is not a trading system. It mirrors the
-> math of the `bet/` app but trades a simulated market by default.
+> and agent-based trading dynamics. It is not a trading system.
 
-> **🧪 Bot Admin Panel** — a real-time control center (control every bot, steer
-> the market, watch emergent behaviour live, replay past runs) ships in
-> `admin/`. Run `python run_admin.py` → open http://127.0.0.1:8080. Stdlib HTTP +
-> SSE, no build step. See **[ADMIN.md](ADMIN.md)**.
+### Three things ship here — one shared bot brain
+
+1. **Offline simulator** — 100–1000 heterogeneous bots on an in-process market
+   (mirrors the real AMM), producing emergent bubbles/crashes with deterministic
+   replay. → `run.py`
+2. **Bot Admin Panel** — a real-time control center: control every bot, steer the
+   market, **set Qwen/embedding endpoints**, watch live, replay. → `run_admin.py`
+   · **[ADMIN.md](ADMIN.md)**
+3. **Live Kalki fleet** — seed ~1000 real users and trade **every** market on the
+   live exchange, driven by a **real news pipeline** (Google News → BBC →
+   embeddings → top-K → LLM) with LLM one-liner comments. → `run_live.py` ·
+   **[LIVE.md](LIVE.md)**
+
+---
+
+## How to use
+
+**1 · Offline simulator** (zero setup, deterministic):
+
+```bash
+pip install -r requirements.txt                 # just PyYAML
+python run.py --config config.offline.yaml      # 1000 bots → bubble → crash → recovery
+python run.py --config config.offline.yaml --out runs/run1.jsonl
+python run.py --config config.offline.yaml --replay runs/run1.jsonl   # bit-identical replay
+```
+
+**2 · Admin panel** (real-time control center):
+
+```bash
+python run_admin.py                             # → http://127.0.0.1:8080  (stdlib HTTP+SSE, no build)
+```
+Pause/resume/reset/edit any bot · global knobs (news, volatility, liquidity,
+chaos, stress) · live price/sentiment/volume charts + per-personality analytics +
+event/trade feeds · replay mode · **Model Endpoints** card to set optional **Qwen**
+and **embedding** URLs at runtime (empty → local). Full reference: [ADMIN.md](ADMIN.md).
+
+**3 · Live Kalki Exchange fleet** (drives the real `bet` market):
+
+```bash
+# one-time, on the bet app: apply bet-integration/ overlay + set INTERNAL_API_SECRET, then seed:
+#   (in bet/bet)  BOTS_COUNT=1000 npx tsx scripts/seed-bots.ts
+python run_live.py --config config.live.yaml    # ~1000 users trade every market + comment
+```
+Endpoints/secret via the admin panel (persisted to `runs/model_endpoints.json`)
+or env (`KALKI_URL`, `INTERNAL_API_SECRET`, `EMBED_URL`, `QWEN_URL`). Full
+reference: [LIVE.md](LIVE.md).
+
+**Tests:**
+
+```bash
+for t in tests/test_*.py; do python3 "$t"; done   # AMM parity · determinism · inference · admin · news
+```
 
 ---
 
@@ -79,20 +128,29 @@ bots/
 │       ├── loop.py            #    the tick loop (the 8-step simulation cycle)
 │       └── recorder.py        #    JSONL state log + replay tape
 ├── inference_server/          # OPTIONAL reference server for the "friend's machine"
-│   ├── server.py              #    FastAPI: POST /finbert, POST /qwen
+│   ├── server.py              #    FastAPI: POST /finbert, /qwen, /embed
 │   └── requirements.txt
 ├── run_admin.py              # ── BOT ADMIN PANEL launcher (see ADMIN.md) ──
-├── ADMIN.md                  #    admin panel docs (API, SSE, state mgmt, React structure)
+├── ADMIN.md                  #    admin panel docs (API, SSE, state mgmt, Model Endpoints)
 ├── admin/                    #    real-time control center (stdlib HTTP + SSE)
-│   ├── manager.py            #    LiveSimulation — threaded tick loop + controls + stats
+│   ├── manager.py            #    LiveSimulation — threaded loop + controls + stats + model endpoints
 │   ├── server.py             #    REST + SSE endpoints + static
 │   └── static/dashboard.html #    the working dashboard (vanilla JS, no build)
 ├── frontend/                 #    OPTIONAL React/Vite SPA (same API)
+├── run_live.py               # ── LIVE KALKI FLEET launcher (see LIVE.md) ──
+├── LIVE.md                   #    live-fleet docs (seeding, internal API, news, run)
+├── config.live.yaml          #    live-fleet config (exchange, news pipeline, endpoints)
+├── live/                     #    drives the REAL bet exchange
+│   ├── kalki_client.py       #    internal-API HTTP client (trade/comment/markets)
+│   ├── comment_gen.py        #    LLM/template one-liner comments
+│   └── runner.py             #    fleet loop (reuses bot brains + news pipeline)
+├── bet-integration/          #    drop-in overlay for the bet app (internal routes + seed)
 └── tests/
     ├── test_amm_parity.py         # Python AMM == bet/lib/amm.ts
     ├── test_determinism.py        # same seed → identical run; inference cost ⟂ bot count
     ├── test_inference_contract.py # schemas, composite routing, per-tick cache dedup
-    └── test_admin.py              # admin control surface: pause/edit/reset, knobs, SSE shape
+    ├── test_admin.py              # admin control surface: pause/edit/reset, knobs, SSE shape
+    └── test_news_feed.py          # query builder, RSS parse, embeddings rank, top-K, LLM refine
 ```
 
 ---
