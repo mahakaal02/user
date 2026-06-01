@@ -139,9 +139,10 @@ class FleetRunner:
                 # with a TTL; falls back to the market title if news is empty.
                 headlines = [m["title"]]
                 if self.news_feed is not None:
-                    needs = self.news_feed.needs_fetch(m["title"], m.get("category"))
+                    gt = m.get("groupTitle")  # parent group context (e.g. FIFA World Cup)
+                    needs = self.news_feed.needs_fetch(m["title"], m.get("category"), gt)
                     allow = needs and fetched < fetch_budget
-                    real = self.news_feed.headlines_for(m["title"], m.get("category"), allow_fetch=allow)
+                    real = self.news_feed.headlines_for(m["title"], m.get("category"), gt, allow_fetch=allow)
                     if needs and allow:
                         fetched += 1
                     if real:

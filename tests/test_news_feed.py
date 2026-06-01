@@ -33,6 +33,17 @@ def test_query_builder_strips_scaffolding():
     assert qb.build("Will OpenAI IPO this year?").lower().startswith("openai ipo")
 
 
+def test_query_builder_folds_group_context():
+    # A generic sub-market gets its parent group's context folded in.
+    qb = QueryBuilder()
+    q = qb.build("Spain", group_title="Who will win the FIFA World Cup?")
+    low = q.lower()
+    assert "spain" in low and "fifa" in low and "world" in low and "cup" in low
+    assert q.split()[0].lower() == "spain"  # sub-market term leads
+    # no group → unchanged
+    assert qb.build("Spain") == "Spain"
+
+
 def test_rss_parser_extracts_titles(monkeypatch=None):
     orig = nf.urllib.request.urlopen
     nf.urllib.request.urlopen = lambda req, timeout=None: _FakeResp(_GNEWS_XML)

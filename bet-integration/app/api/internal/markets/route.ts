@@ -28,6 +28,10 @@ export async function GET(req: Request) {
       endsAt: true,
       volumeCoins: true,
       createdAt: true,
+      // Parent group title (e.g. "Who will win the FIFA World Cup?") so the
+      // news pipeline can give context to generic sub-markets like "Spain".
+      // Nullable read of an existing relation — no schema change.
+      group: { select: { title: true } },
     },
     orderBy: { createdAt: "desc" },
     take: 1000,
@@ -46,6 +50,7 @@ export async function GET(req: Request) {
       endsAt: m.endsAt,
       volumeCoins: m.volumeCoins,
       createdAt: m.createdAt,
+      groupTitle: m.group?.title ?? null,
     };
   });
 

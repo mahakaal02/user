@@ -87,16 +87,31 @@ def _clean_gnews_title(title: str) -> str:
 
 
 class QueryBuilder:
-    """Market title → focused Google News query."""
+    """Market title → focused Google News query.
+
+    A generic sub-market title (e.g. "Spain") inside a parent group ("Who will
+    win the FIFA World Cup?") gets the parent's context folded in →
+    "Spain win FIFA World Cup", so the query is actually about the right event.
+    """
 
     def __init__(self, max_terms: int = 12) -> None:
         self.max_terms = max_terms
 
-    def build(self, title: str, category: str | None = None) -> str:
-        toks = _WORD.findall(title.rstrip("?").strip())
+    def _keep(self, text: str) -> list[str]:
+        toks = _WORD.findall(text.rstrip("?").strip())
         keep = [w for w in toks if w.lower() not in _QSTOP]
-        if len(keep) < 2 and toks:  # too aggressive — fall back to raw title minus '?'
+        if len(keep) < 2 and toks:  # too aggressive — fall back to raw tokens
             keep = toks
+        return keep
+
+    def build(self, title: str, category: str | None = None, group_title: str | None = None) -> str:
+        keep = self._keep(title)
+        if group_title:
+            seen = {w.lower() for w in keep}
+            for w in self._keep(group_title):  # sub-market terms first, parent context after
+                if w.lower() not in seen:
+                    seen.add(w.lower())
+                    keep.append(w)
         return " ".join(keep[: self.max_terms]) or title.strip()
 
 
@@ -182,16 +197,18 @@ class MarketNewsFeed:
         q = urllib.parse.quote(query)
         return f"https://news.google.com/rss/search?q={q}&hl={self.hl}&gl={self.gl}&ceid={self.ceid}"
 
-    def needs_fetch(self, title: str, category: str | None = None) -> bool:
+    def needs_fetch(self, title: str, category: str | None = None, group_title: str | None = None) -> bool:
         """True if this market's news is missing or older than the TTL — lets the
         runner spend its per-cycle HTTP budget only on real fetches."""
-        ent = self._cache.get(self.qb.build(title, category))
+        ent = self._cache.get(self.qb.build(title, category, group_title))
         return not (ent and (self._now() - ent[0]) < self.cache_ttl_s)
 
-    def headlines_for(self, title: str, category: str | None = None, allow_fetch: bool = True) -> list[str]:
-        """Relevant real headlines for a market. Cached for ``cache_ttl_s``. With
-        ``allow_fetch=False`` returns cache-or-empty (lets the caller throttle HTTP)."""
-        query = self.qb.build(title, category)
+    def headlines_for(self, title: str, category: str | None = None, group_title: str | None = None,
+                      allow_fetch: bool = True) -> list[str]:
+        """Relevant real headlines for a market. ``group_title`` (the parent group,
+        if any) is folded into the query so generic sub-markets resolve correctly.
+        Cached for ``cache_ttl_s``; ``allow_fetch=False`` returns cache-or-empty."""
+        query = self.qb.build(title, category, group_title)
         ent = self._cache.get(query)
         if ent and (self._now() - ent[0]) < self.cache_ttl_s:
             return ent[1]
