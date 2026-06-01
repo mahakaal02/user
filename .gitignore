@@ -20,6 +20,9 @@ frontend/dist/
 runs/*.jsonl
 !runs/demo.jsonl
 
+# Admin-saved model endpoints (may contain private URLs)
+runs/model_endpoints.json
+
 # Env / secrets (never commit)
 .env
 .env.*

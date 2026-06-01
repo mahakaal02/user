@@ -122,6 +122,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/analytics":
             with sim._lock:
                 return self._send_json(sim.analytics())
+        if path == "/models":
+            with sim._lock:
+                return self._send_json(sim.model_status())
 
         return self._send_json({"error": "not found", "path": path}, 404)
 
@@ -131,7 +134,16 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         sim = SIM
 
+        # Endpoint connectivity test makes an external network call → must NOT
+        # hold the sim lock (would stall ticks for up to the timeout).
+        if path == "/models/test":
+            return self._send_json(sim.test_endpoint(body.get("kind", "qwen"), body.get("url", "")))
+
         with sim._lock:
+            # --- model endpoints (Qwen / embedding URLs, both optional) ---
+            if path == "/models":
+                sim.set_model_endpoints(qwen_url=body.get("qwen_url"), embedding_url=body.get("embedding_url"))
+                return self._send_json({"ok": True, "models": sim.model_status()})
             # --- per-bot controls ---
             if path.startswith("/bot/"):
                 rest = path[len("/bot/"):]

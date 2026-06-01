@@ -32,7 +32,26 @@ services.
 | **D. Live market** — price/probability, price history chart, volume, sentiment timeline, news feed | center charts, SSE + `GET /market/*` |
 | **E. Behaviour analytics** — per-type PnL curve, win/loss, avg trade size, reaction-delay & bias effectiveness | analytics table, `GET /analytics` |
 | **F. Event log** — live stream of news, sentiment, bot actions, trades, price | right feeds, SSE `/stream` |
+| **G. Model endpoints** — set/test optional **Qwen** + **embedding** URLs so the bots use real models | Model Endpoints card, `GET/POST /models`, `POST /models/test` |
 | **Bonus** — replay-as-video, stress mode, chaos slider | replay box, `🔥 Stress`, `chaos` slider |
+
+### Model endpoints (Qwen + embedding, both optional)
+
+The **Model Endpoints** card lets the admin point the bots at real models at
+runtime — no restart, no config edit:
+
+- **Qwen URL** — applied to the running simulation **immediately** (per-tick
+  shared reasoning routes through Qwen; high-volume per-headline sentiment stays
+  on the local heuristic so Qwen isn't hammered). Empty → local heuristic.
+- **Embedding URL** — the news relevance cheap-filter's semantic backend. Empty →
+  local lexical hashing.
+- **Test** buttons ping each endpoint (`POST /models/test`) and show
+  reachable/latency or the error — no lock held, so the sim keeps ticking.
+- Both are **persisted** to `runs/model_endpoints.json`, which `run_live.py`
+  reads on start, so the **live Kalki fleet** uses the same Qwen (reasoning +
+  LLM comments + relevance refine) and embedding endpoints. Admin settings
+  override config/env. `remote_fallback_local` keeps everything running if an
+  endpoint is unreachable.
 
 Verified live with 1000 bots: price chart renders the bubble→crash→recovery,
 analytics rank personalities (contrarian wins, herd loses), trades stream at

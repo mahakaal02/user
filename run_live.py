@@ -31,6 +31,42 @@ def load_config(path: str) -> dict:
         return _subst_env(yaml.safe_load(fh))
 
 
+def apply_admin_endpoints(cfg: dict) -> dict:
+    """If the admin panel saved model endpoints (runs/model_endpoints.json), use
+    them (overriding config/env): the Qwen URL drives reasoning + LLM comments +
+    relevance refine; the embedding URL drives the news relevance cheap-filter.
+    So you can point the bots at a Qwen / embedding model from the admin UI."""
+    import json
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "model_endpoints.json")
+    if not os.path.exists(path):
+        return cfg
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            ep = json.load(fh)
+    except (OSError, ValueError):
+        return cfg
+    qwen = (ep.get("qwen_url") or "").strip()
+    emb = (ep.get("embedding_url") or "").strip()
+    if qwen:
+        inf = cfg.setdefault("inference", {})
+        inf["reasoning_backend"] = "qwen_api"
+        inf.setdefault("qwen_api", {}).update({"type": "qwen_api", "url": qwen})
+        inf.setdefault("cache", {"enabled": True, "scope": "tick"})
+        cfg.setdefault("comments", {})["backend"] = "llm"
+        cfg["comments"]["qwen_url"] = qwen
+        cfg.setdefault("news_feed", {}).setdefault("relevance", {}).setdefault("refine", {})["qwen_url"] = qwen
+    if emb:
+        rel = cfg.setdefault("news_feed", {}).setdefault("relevance", {})
+        rel["backend"] = "embeddings"
+        rel.setdefault("embeddings", {})["url"] = emb
+    if qwen or emb:
+        print(f"  admin endpoints (runs/model_endpoints.json): qwen={'set' if qwen else '—'}, "
+              f"embedding={'set' if emb else '—'}")
+    return cfg
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Live Kalki Exchange bot fleet")
     ap.add_argument("--config", default="config.live.yaml")
@@ -38,7 +74,7 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="run a single cycle and exit")
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = apply_admin_endpoints(load_config(args.config))
     ex = cfg["exchange"]
     client = KalkiClient(ex["base_url"], ex["internal_secret"], ex.get("timeout_s", 15))
     comment_gen = CommentGenerator(

@@ -22,9 +22,12 @@ locking, no async — plain stdlib threads, matching the project's ethos.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 
 from sim.bots import build_population
@@ -75,13 +78,21 @@ class LiveSimulation:
         self._replay_idx = 0
         self._replay_path: str | None = None
 
+        # model endpoints (both optional) — admin can set these at runtime so the
+        # bots use a real Qwen / embedding model. Empty → local heuristic/hashing.
+        # Initial value: env, then any value the admin persisted earlier.
+        self.qwen_url = os.environ.get("QWEN_URL", "").strip()
+        self.embedding_url = os.environ.get("EMBED_URL", "").strip()
+        self._endpoint_status: dict[str, dict | None] = {"qwen": None, "embedding": None}
+        self._load_endpoints()
+
         self._build()
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
         seed = int(self.cfg["sim"].get("seed", 0))
         self.rng_hub = RngHub(seed)
-        self.inference = build_inference_client(self.cfg["inference"])
+        self.inference = self._make_inference()
         self.market = build_market(self.cfg["market"])
         self.news = build_news_source(
             self.cfg["sim"].get("news", {"source": "synthetic"}), self.rng_hub.stream("news")
@@ -110,6 +121,88 @@ class LiveSimulation:
         self._events.clear()
         self._news_events.clear()
         self.liquidity_scale = 1.0
+
+    # ----------------------------------------------------------- model endpoints
+    def _make_inference(self):
+        """Build the sim's inference client. If a Qwen URL is set, route the
+        per-tick (shared) reasoning through it — bounded, one call/tick — and
+        keep the high-volume per-headline sentiment/event on the local heuristic.
+        Empty Qwen URL → fully local. ``remote_fallback_local`` keeps the sim
+        alive if the endpoint is unreachable."""
+        if self.qwen_url:
+            return build_inference_client({
+                "sentiment_backend": "local_heuristic",
+                "event_backend": "local_heuristic",
+                "reasoning_backend": "qwen_api",
+                "qwen_api": {"type": "qwen_api", "url": self.qwen_url, "timeout_s": 20, "retries": 1},
+                "local_heuristic": {"type": "local_heuristic"},
+                "remote_fallback_local": True,
+                "cache": {"enabled": True, "scope": "tick"},
+            })
+        return build_inference_client(self.cfg["inference"])
+
+    def _endpoints_file(self) -> str:
+        # Shared with the live fleet (run_live.py reads this), next to the configs.
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "runs", "model_endpoints.json")
+
+    def _load_endpoints(self) -> None:
+        try:
+            with open(self._endpoints_file(), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.qwen_url = (data.get("qwen_url") or self.qwen_url or "").strip()
+            self.embedding_url = (data.get("embedding_url") or self.embedding_url or "").strip()
+        except (OSError, ValueError):
+            pass
+
+    def _persist_endpoints(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._endpoints_file()), exist_ok=True)
+            with open(self._endpoints_file(), "w", encoding="utf-8") as fh:
+                json.dump({"qwen_url": self.qwen_url, "embedding_url": self.embedding_url}, fh, indent=2)
+        except OSError:
+            pass
+
+    def set_model_endpoints(self, qwen_url=None, embedding_url=None) -> None:
+        """Set/clear the Qwen and/or embedding URLs (call under the sim lock).
+        Applies the Qwen URL to THIS sim's inference immediately and persists both
+        so the live fleet (run_live.py) picks them up on its next start."""
+        if qwen_url is not None:
+            self.qwen_url = qwen_url.strip()
+        if embedding_url is not None:
+            self.embedding_url = embedding_url.strip()
+        self.inference = self._make_inference()   # apply Qwen to the running sim now
+        self._persist_endpoints()
+
+    def test_endpoint(self, kind: str, url: str) -> dict:
+        """Ping a model endpoint (no sim lock needed). kind: 'qwen' | 'embedding'."""
+        url = (url or "").strip()
+        if not url:
+            return {"ok": False, "error": "empty url"}
+        t0 = time.perf_counter()
+        payload = ({"texts": ["connectivity test"]} if kind == "embedding"
+                   else {"task": "reasoning", "prompt": "connectivity test"})
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                         method="POST", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                body = json.loads(r.read() or b"{}")
+            ok = ("vectors" in body or "embeddings" in body) if kind == "embedding" else isinstance(body, (dict, list))
+            res = {"ok": bool(ok), "latency_ms": round((time.perf_counter() - t0) * 1000)}
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as e:
+            res = {"ok": False, "error": str(e)[:120]}
+        self._endpoint_status[kind] = res
+        return res
+
+    def model_status(self) -> dict:
+        return {
+            "qwen_url": self.qwen_url,
+            "embedding_url": self.embedding_url,
+            "qwen_backend": "qwen (remote)" if self.qwen_url else "local heuristic",
+            "embedding_backend": "remote model" if self.embedding_url else "local hashing",
+            "last_test": self._endpoint_status,
+            "note": "Qwen applies to this simulation now; both persist for the live fleet.",
+        }
 
     # ------------------------------------------------------------ lifecycle
     def start_thread(self) -> None:

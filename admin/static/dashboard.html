@@ -146,6 +146,21 @@
       </div>
       <div class="ctl" style="margin-top:6px"><input id="sSeek" type="range" min="0" max="100" value="0" style="width:100%"></div>
     </div>
+    <div class="card">
+      <h3>Model endpoints <span class="muted">(optional)</span></h3>
+      <div class="field"><label>Qwen URL · <span id="qwenBadge" class="pill">local</span></label>
+        <div class="ctl" style="gap:6px"><input id="qwenUrl" type="text" placeholder="http://host:8002/qwen" style="flex:1">
+        <button id="qwenTest" class="sm">Test</button></div>
+      </div>
+      <div class="field"><label>Embedding URL · <span id="embBadge" class="pill">local</span></label>
+        <div class="ctl" style="gap:6px"><input id="embUrl" type="text" placeholder="http://host:8003/embed" style="flex:1">
+        <button id="embTest" class="sm">Test</button></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
+        <button id="modelsSave" class="primary sm">Save</button>
+        <span id="modelsMsg" class="muted" style="font-size:10px"></span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -375,8 +390,33 @@ function saveBot(id){
 function botAct(id,act){ api.post('/bot/'+id+'/'+act).then(()=>act==='reset'||act?openBot(id):closeModal()); }
 
 // ---------- boot ----------
+// ---------- model endpoints (Qwen / embedding URLs, both optional) ----------
+function mbadge(el, on, okText){ el.textContent = on?okText:'local'; el.className='pill '+(on?'active':''); el.style.color=''; }
+function loadModels(){
+  api.get('/models').then(m=>{
+    if(document.activeElement!==$('#qwenUrl')) $('#qwenUrl').value = m.qwen_url||'';
+    if(document.activeElement!==$('#embUrl')) $('#embUrl').value = m.embedding_url||'';
+    mbadge($('#qwenBadge'), !!m.qwen_url, 'qwen');
+    mbadge($('#embBadge'), !!m.embedding_url, 'remote');
+  });
+}
+$('#modelsSave').onclick=()=>{
+  $('#modelsMsg').textContent='saving…';
+  api.post('/models',{qwen_url:$('#qwenUrl').value.trim(), embedding_url:$('#embUrl').value.trim()})
+    .then(()=>{ loadModels(); $('#modelsMsg').textContent='saved · Qwen live in sim now, both used by live fleet'; });
+};
+function testEndpoint(kind, url, badgeEl){
+  $('#modelsMsg').textContent='testing '+kind+'…';
+  api.post('/models/test',{kind, url}).then(r=>{
+    $('#modelsMsg').textContent = kind+': '+(r.ok?('reachable '+(r.latency_ms||'?')+'ms'):('FAILED '+(r.error||'')));
+    badgeEl.style.color = r.ok?'var(--grn)':'var(--red)';
+  });
+}
+$('#qwenTest').onclick=()=>testEndpoint('qwen', $('#qwenUrl').value.trim(), $('#qwenBadge'));
+$('#embTest').onclick=()=>testEndpoint('embedding', $('#embUrl').value.trim(), $('#embBadge'));
+
 connect();
-loadBots(); loadAnalytics();
+loadBots(); loadAnalytics(); loadModels();
 setInterval(loadBots, 1500);
 setInterval(loadAnalytics, 3000);
 </script>
