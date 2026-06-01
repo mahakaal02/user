@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node (optional React frontend)
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+
+# Local tooling / machine-specific
+.claude/
+*.log
+
+# Simulation run logs (regenerated) — but keep the canonical sample for --replay
+runs/*.jsonl
+!runs/demo.jsonl
+
+# Env / secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bot Admin Panel · Prediction Market Simulator</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#121826; --panel2:#0e1421; --line:#1f2a3c;
+    --ink:#dce3ef; --mut:#8294b0; --acc:#4c8dff; --grn:#3fb950; --red:#f85149;
+    --yel:#d29922; --pur:#a371f7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  h1,h2,h3{margin:0;font-weight:600}
+  .topbar{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .topbar h1{font-size:15px;letter-spacing:.3px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--red);display:inline-block;margin-right:5px}
+  .dot.on{background:var(--grn);box-shadow:0 0 6px var(--grn)}
+  .badge{font-size:11px;color:var(--mut);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:2px 7px}
+  button{background:#1b2435;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--acc)}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+  button.danger{background:#3a1d22;border-color:#5a2a30;color:#ffb4ad}
+  button.sm{padding:2px 7px;font-size:11px}
+  .spacer{flex:1}
+  .ctl{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--mut)}
+  input[type=range]{width:90px;accent-color:var(--acc)}
+  input[type=text],input[type=number]{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit;width:80px}
+  .grid{display:grid;grid-template-columns:320px 1fr 350px;gap:10px;padding:10px;height:calc(100vh - 52px)}
+  .col{display:flex;flex-direction:column;gap:10px;min-height:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:0;display:flex;flex-direction:column}
+  .card h3{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+  .scroll{overflow:auto;min-height:0}
+  table{width:100%;border-collapse:collapse;font-size:11.5px}
+  th{position:sticky;top:0;background:var(--panel);text-align:left;color:var(--mut);font-weight:500;padding:4px 6px;border-bottom:1px solid var(--line);cursor:pointer}
+  td{padding:3px 6px;border-bottom:1px solid #161e2e;white-space:nowrap}
+  tr:hover td{background:#161f30;cursor:pointer}
+  .pos{color:var(--grn)} .neg{color:var(--red)}
+  .pill{font-size:10px;padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
+  .pill.active{color:var(--grn);border-color:#1d3a26}
+  .pill.paused{color:var(--yel);border-color:#3a3119}
+  .pill.dead{color:var(--mut);border-color:var(--line);text-decoration:line-through}
+  .feed{font-size:11px;display:flex;flex-direction:column;gap:3px}
+  .feed .row{padding:3px 6px;border-radius:5px;background:var(--panel2);border-left:2px solid var(--line)}
+  .feed .news{border-left-color:var(--acc)} .feed .trade{border-left-color:var(--pur)} .feed .price{border-left-color:var(--yel)}
+  .muted{color:var(--mut)}
+  .kpis{display:flex;gap:10px;flex-wrap:wrap}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 10px;min-width:88px}
+  .kpi .v{font-size:18px;font-weight:600} .kpi .l{font-size:10px;color:var(--mut)}
+  svg{display:block;width:100%}
+  .legend{font-size:10px;color:var(--mut);display:flex;gap:10px;margin-top:4px}
+  .sw{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:3px}
+  .filters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+  select{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:3px 5px;font:inherit}
+  /* modal */
+  .overlay{position:fixed;inset:0;background:rgba(4,8,14,.72);display:none;align-items:center;justify-content:center;z-index:20}
+  .overlay.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:680px;max-width:94vw;max-height:90vh;overflow:auto;padding:16px}
+  .modal h2{font-size:15px;margin-bottom:2px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .field{display:flex;flex-direction:column;gap:3px;margin:5px 0}
+  .field label{font-size:10px;color:var(--mut)}
+  .analytics td,.analytics th{padding:4px 6px}
+  .bar{height:7px;border-radius:4px;background:var(--acc)}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>🧪 Bot Admin Panel</h1>
+  <span class="badge"><span id="conn" class="dot"></span><span id="connTxt">connecting…</span></span>
+  <span class="badge">tick <b id="tick">–</b></span>
+  <span class="badge">bots <b id="nbots">–</b></span>
+  <span class="badge" id="modeBadge">live</span>
+  <button id="btnPlay" class="primary">▶ Resume</button>
+  <button id="btnReset" class="danger">⟲ Reset sim</button>
+  <button id="btnPauseAll" class="sm">⏸ Pause all bots</button>
+  <button id="btnResumeAll" class="sm">▶ Resume all</button>
+  <div class="spacer"></div>
+  <div class="ctl">news <button id="btnNews" class="sm">ON</button></div>
+  <div class="ctl">speed <input id="sSpeed" type="range" min="1" max="30" step="1" value="6"><b id="vSpeed">6</b>/s</div>
+  <div class="ctl">vol <input id="sVol" type="range" min="0" max="4" step="0.1" value="1"><b id="vVol">1.0</b></div>
+  <div class="ctl">liq <input id="sLiq" type="range" min="0.2" max="4" step="0.1" value="1"><b id="vLiq">1.0</b></div>
+  <div class="ctl">chaos <input id="sChaos" type="range" min="0" max="1" step="0.05" value="0"><b id="vChaos">0.0</b></div>
+  <button id="btnStress" class="sm">🔥 Stress</button>
+</div>
+
+<div class="grid">
+  <!-- LEFT: bots -->
+  <div class="col">
+    <div class="card" style="flex:1">
+      <h3>Bots <span class="muted" id="botCount"></span></h3>
+      <div class="filters">
+        <select id="fType"><option value="">all types</option></select>
+        <select id="fStatus"><option value="">all status</option><option>active</option><option>paused</option><option>dead</option></select>
+        <select id="fSort"><option value="pnl">sort: PnL</option><option value="equity">equity</option><option value="trades">trades</option></select>
+      </div>
+      <div class="scroll" style="flex:1">
+        <table id="botTable"><thead><tr>
+          <th>bot</th><th>type</th><th>bankroll</th><th>PnL</th><th>pos</th><th>risk</th><th>st</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER: market + analytics -->
+  <div class="col">
+    <div class="card">
+      <h3>Market — YES probability <span id="priceNow" class="muted"></span></h3>
+      <div class="kpis" style="margin-bottom:8px">
+        <div class="kpi"><div class="v" id="kPrice">–</div><div class="l">YES price</div></div>
+        <div class="kpi"><div class="v" id="kVol">–</div><div class="l">volume/tick</div></div>
+        <div class="kpi"><div class="v" id="kFlow">–</div><div class="l">net flow</div></div>
+        <div class="kpi"><div class="v" id="kSent">–</div><div class="l">sentiment</div></div>
+        <div class="kpi"><div class="v" id="kLiq">–</div><div class="l">liquidity</div></div>
+      </div>
+      <svg id="priceChart" height="180" viewBox="0 0 600 180" preserveAspectRatio="none"></svg>
+      <div class="legend"><span><i class="sw" style="background:var(--acc)"></i>price</span><span><i class="sw" style="background:var(--pur)"></i>sentiment(+)</span><span><i class="sw" style="background:var(--yel)"></i>volume</span></div>
+    </div>
+    <div class="card" style="flex:1;min-height:0">
+      <h3>Behaviour analytics — PnL by personality <span class="muted">(bias effectiveness)</span></h3>
+      <div class="scroll" style="flex:1">
+        <table class="analytics" id="anTable"><thead><tr>
+          <th>type</th><th>avg PnL</th><th>PnL curve</th><th>W/L</th><th>avg size</th><th>trades</th><th>delay</th><th>profit%</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: feeds -->
+  <div class="col">
+    <div class="card" style="flex:1">
+      <h3>Live event feed</h3>
+      <div class="scroll feed" id="eventFeed" style="flex:1"></div>
+    </div>
+    <div class="card" style="flex:1">
+      <h3>Trades stream <span class="muted" id="tradeRate"></span></h3>
+      <div class="scroll feed" id="tradeFeed" style="flex:1"></div>
+    </div>
+    <div class="card">
+      <h3>Replay mode (bonus)</h3>
+      <div class="ctl" style="gap:6px">
+        <input id="replayPath" type="text" style="width:150px" placeholder="runs/demo.jsonl" value="runs/demo.jsonl">
+        <button id="btnReplay" class="sm">Load</button>
+        <button id="btnLive" class="sm">Live</button>
+      </div>
+      <div class="ctl" style="margin-top:6px"><input id="sSeek" type="range" min="0" max="100" value="0" style="width:100%"></div>
+    </div>
+  </div>
+</div>
+
+<!-- BOT DETAIL MODAL -->
+<div class="overlay" id="overlay">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = {
+  get: p => fetch(p).then(r=>r.json()),
+  post: (p,b) => fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}).then(r=>r.json()),
+};
+// ---- local state fed by SSE ----
+const S = { price:[], vol:[], sent:[], maxP:1, control:{}, types:[] };
+const cap = (a,n)=>{ while(a.length>n) a.shift(); };
+
+// ---------- charts (hand-rolled SVG) ----------
+function linePath(vals,w,h,lo,hi,pad=4){
+  if(vals.length<2) return '';
+  const span=Math.max(hi-lo,1e-9), n=vals.length;
+  return vals.map((v,i)=>{
+    const x=(i/(n-1))*(w-2*pad)+pad;
+    const y=h-pad-((v-lo)/span)*(h-2*pad);
+    return (i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1);
+  }).join(' ');
+}
+function bars(vals,w,h,hi){
+  if(!vals.length) return '';
+  const n=vals.length, bw=(w/n);
+  return vals.map((v,i)=>{
+    const bh=Math.min(h,(v/Math.max(hi,1e-9))*h);
+    return `<rect x="${(i*bw).toFixed(1)}" y="${(h-bh).toFixed(1)}" width="${(bw*0.8).toFixed(1)}" height="${bh.toFixed(1)}" fill="var(--yel)" opacity="0.25"/>`;
+  }).join('');
+}
+function renderPrice(){
+  const w=600,h=180;
+  const price=S.price, sent=S.sent, vol=S.vol;
+  const volHi=Math.max(...vol,1);
+  const p=linePath(price,w,h,0,1);
+  const sp=linePath(sent,w,h,0,1);
+  const mid=h-4-(0.5)*(h-8);
+  $('#priceChart').innerHTML =
+    bars(vol,w,h,volHi)+
+    `<line x1="0" y1="${mid}" x2="${w}" y2="${mid}" stroke="#243044" stroke-dasharray="3 4"/>`+
+    `<path d="${sp}" fill="none" stroke="var(--pur)" stroke-width="1" opacity="0.7"/>`+
+    `<path d="${p}" fill="none" stroke="var(--acc)" stroke-width="2"/>`;
+}
+
+// ---------- feeds ----------
+function pushFeed(el,html,cls){
+  const d=document.createElement('div'); d.className='row '+(cls||''); d.innerHTML=html;
+  el.prepend(d); while(el.childElementCount>120) el.removeChild(el.lastChild);
+}
+const fmt = n => (n>=0?'+':'')+n.toFixed(1);
+const cls = n => n>=0?'pos':'neg';
+
+// ---------- SSE ----------
+let es;
+function connect(){
+  es = new EventSource('/stream');
+  es.onopen = ()=>{ $('#conn').classList.add('on'); $('#connTxt').textContent='live'; };
+  es.onerror = ()=>{ $('#conn').classList.remove('on'); $('#connTxt').textContent='reconnecting…'; };
+  es.onmessage = ev=>{
+    const p = JSON.parse(ev.data);
+    if(p.type==='hello'){ applyControl(p.control); return; }
+    if(p.type!=='tick') return;
+    const m=p.market;
+    // chart series
+    S.price.push(m.price); S.sent.push(m.sentiment? m.sentiment.positive:0); S.vol.push(m.volume||0);
+    cap(S.price,180); cap(S.sent,180); cap(S.vol,180);
+    // KPIs
+    $('#tick').textContent=p.tick;
+    $('#kPrice').textContent=m.price.toFixed(3); $('#kPrice').className='v '+(m.price>=0.5?'pos':'neg');
+    $('#priceNow').textContent='= '+(m.price*100).toFixed(1)+'%';
+    $('#kVol').textContent=Math.round(m.volume);
+    $('#kFlow').textContent=fmt(m.net_flow); $('#kFlow').className='v '+cls(m.net_flow);
+    $('#kSent').textContent=m.sentiment?('+'+m.sentiment.positive.toFixed(2)):'–';
+    $('#kLiq').textContent=m.liquidity?Math.round(m.liquidity/1000)+'k':'–';
+    $('#tradeRate').textContent=m.trades+' fills/tick';
+    renderPrice();
+    applyControl(p.control);
+    if(p.types && p.types.length) S.types=p.types;
+    // feeds
+    (p.events||[]).forEach(e=>{
+      const t = e.kind==='news' ? `📰 <b>${e.text}</b>` : e.kind==='price' ? `📈 ${e.text}` : `🤖 ${e.text}`;
+      pushFeed($('#eventFeed'), `<span class="muted">t${e.tick}</span> ${t}`, e.kind);
+    });
+    (p.trades||[]).slice(0,8).forEach(tr=>{
+      const dir = (tr.side==='BUY'&&tr.outcome==='YES')||(tr.side==='SELL'&&tr.outcome==='NO');
+      pushFeed($('#tradeFeed'),
+        `<span class="muted">${tr.bot_id}</span> <b class="${dir?'pos':'neg'}">${tr.side} ${tr.outcome}</b> ${tr.shares}@${tr.price}`,'trade');
+    });
+  };
+}
+
+// ---------- control bindings ----------
+function applyControl(c){
+  if(!c) return; S.control=c;
+  $('#nbots').textContent=c.n_bots;
+  $('#btnPlay').innerHTML = c.running?'⏸ Pause':'▶ Resume';
+  $('#btnPlay').className = c.running?'':'primary';
+  $('#btnNews').textContent = c.news_enabled?'ON':'OFF';
+  $('#btnNews').style.color = c.news_enabled?'var(--grn)':'var(--mut)';
+  $('#modeBadge').textContent = c.mode + (c.replay?` ${c.replay.idx}/${c.replay.total}`:'');
+  $('#modeBadge').style.color = c.mode==='replay'?'var(--yel)':'var(--mut)';
+  if(c.replay){ const s=$('#sSeek'); s.max=c.replay.total; if(document.activeElement!==s) s.value=c.replay.idx; }
+  // reflect sliders only when the user isn't dragging them
+  const set=(id,val,fmt)=>{ const el=$(id); if(document.activeElement!==el) el.value=val; };
+  set('#sSpeed',c.speed); $('#vSpeed').textContent=c.speed;
+  set('#sVol',c.volatility); $('#vVol').textContent=c.volatility.toFixed(1);
+  set('#sLiq',c.liquidity_scale); $('#vLiq').textContent=c.liquidity_scale.toFixed(1);
+  set('#sChaos',c.chaos); $('#vChaos').textContent=c.chaos.toFixed(2);
+}
+$('#btnPlay').onclick=()=>api.post(S.control.running?'/simulation/pause':'/simulation/resume');
+$('#btnReset').onclick=()=>{ if(confirm('Reset the whole simulation?')) api.post('/simulation/reset').then(()=>{S.price=[];S.sent=[];S.vol=[];}); };
+$('#btnPauseAll').onclick=()=>api.post('/bots/pause_all');
+$('#btnResumeAll').onclick=()=>api.post('/bots/resume_all');
+$('#btnNews').onclick=()=>api.post('/simulation/config',{news_enabled:!S.control.news_enabled});
+$('#btnStress').onclick=()=>api.post('/simulation/stress',{on:(S.control.aggression_mult||1)<2});
+$('#sSpeed').oninput=e=>{$('#vSpeed').textContent=e.target.value; api.post('/simulation/config',{speed:+e.target.value});};
+$('#sVol').oninput=e=>{$('#vVol').textContent=(+e.target.value).toFixed(1); api.post('/simulation/config',{volatility:+e.target.value});};
+$('#sLiq').oninput=e=>{$('#vLiq').textContent=(+e.target.value).toFixed(1); api.post('/simulation/config',{liquidity:+e.target.value});};
+$('#sChaos').oninput=e=>{$('#vChaos').textContent=(+e.target.value).toFixed(2); api.post('/simulation/config',{chaos:+e.target.value});};
+document.addEventListener('keydown',e=>{ if(e.code==='Space'&&e.target.tagName!=='INPUT'){e.preventDefault();$('#btnPlay').click();}});
+// replay
+$('#btnReplay').onclick=()=>api.post('/simulation/replay',{path:$('#replayPath').value}).then(r=>{ if(r.error) alert(r.error); });
+$('#btnLive').onclick=()=>api.post('/simulation/replay',{action:'exit'});
+$('#sSeek').onchange=e=>api.post('/simulation/replay',{action:'seek',idx:+e.target.value});
+
+// ---------- bot table (polled) ----------
+let filters={type:'',status:'',sort:'pnl'};
+$('#fType').onchange=e=>{filters.type=e.target.value;loadBots();};
+$('#fStatus').onchange=e=>{filters.status=e.target.value;loadBots();};
+$('#fSort').onchange=e=>{filters.sort=e.target.value;loadBots();};
+function loadBots(){
+  const qs=`/bots?limit=150&sort=${filters.sort}&type=${filters.type}&status=${filters.status}`;
+  api.get(qs).then(d=>{
+    $('#botCount').textContent=`(${d.count} shown)`;
+    const tb=$('#botTable tbody'); tb.innerHTML='';
+    d.bots.forEach(b=>{
+      const tr=document.createElement('tr'); tr.onclick=()=>openBot(b.bot_id);
+      tr.innerHTML=`<td>${b.bot_id}</td><td>${b.type}</td><td>${b.bankroll}</td>
+        <td class="${cls(b.pnl)}">${fmt(b.pnl)}</td>
+        <td class="muted">${b.positions.yes>b.positions.no?'Y'+b.positions.yes.toFixed(0):'N'+b.positions.no.toFixed(0)}</td>
+        <td>${b.risk_level}</td><td><span class="pill ${b.status}">${b.status}</span></td>`;
+      tb.appendChild(tr);
+    });
+  });
+}
+// populate type filter once
+api.get('/analytics').then(d=>{ d.types.forEach(t=>{const o=document.createElement('option');o.value=t.type;o.textContent=t.type;$('#fType').appendChild(o);}); });
+
+// ---------- analytics (polled) ----------
+function spark(vals){
+  if(!vals||vals.length<2) return '';
+  const lo=Math.min(...vals),hi=Math.max(...vals);
+  return `<svg height="20" width="120" viewBox="0 0 120 20" preserveAspectRatio="none" style="width:120px"><path d="${linePath(vals,120,20,lo,hi,2)}" fill="none" stroke="${vals[vals.length-1]>=0?'var(--grn)':'var(--red)'}" stroke-width="1.3"/></svg>`;
+}
+function loadAnalytics(){
+  api.get('/analytics').then(d=>{
+    const tb=$('#anTable tbody'); tb.innerHTML='';
+    d.types.forEach(t=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td><b>${t.type}</b> <span class="muted">×${t.count}</span></td>
+        <td class="${cls(t.avg_pnl)}">${fmt(t.avg_pnl)} <span class="muted">(${t.avg_pnl_pct}%)</span></td>
+        <td>${spark(t.pnl_curve)}</td>
+        <td>${t.win_loss_ratio}</td><td>${t.avg_trade_size}</td><td>${t.trades_per_bot}</td>
+        <td>${t.avg_reaction_delay}</td>
+        <td><div class="bar" style="width:${Math.round(t.profit_share*60)}px"></div>${Math.round(t.profit_share*100)}%</td>`;
+      tb.appendChild(tr);
+    });
+  });
+}
+
+// ---------- bot detail modal ----------
+function openBot(id){
+  api.get('/bot/'+id).then(b=>{
+    if(b.error) return;
+    const p=b.params;
+    $('#modal').innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div><h2>${b.bot_id} <span class="pill ${b.status}">${b.status}</span></h2>
+        <span class="muted">${b.type} · risk ${b.risk_level} · last: ${b.last_action||'—'}</span></div>
+        <button class="sm" onclick="closeModal()">✕</button>
+      </div>
+      <div class="kpis" style="margin:12px 0">
+        <div class="kpi"><div class="v ${cls(b.pnl)}">${fmt(b.pnl)}</div><div class="l">PnL (${b.pnl_pct}%)</div></div>
+        <div class="kpi"><div class="v">${b.bankroll}</div><div class="l">bankroll</div></div>
+        <div class="kpi"><div class="v">${b.realized_pnl}</div><div class="l">realized</div></div>
+        <div class="kpi"><div class="v">${b.trades}</div><div class="l">trades</div></div>
+        <div class="kpi"><div class="v">${b.wins}/${b.losses}</div><div class="l">win/loss</div></div>
+        <div class="kpi"><div class="v">${b.avg_trade_size}</div><div class="l">avg size</div></div>
+      </div>
+      <h3 class="muted" style="font-size:11px">EQUITY CURVE</h3>
+      <svg height="70" viewBox="0 0 640 70" preserveAspectRatio="none" style="margin:4px 0">
+        ${(()=>{const c=b.equity_curve||[];if(c.length<2)return'';const lo=Math.min(...c,0),hi=Math.max(...c,0);
+          const mid=70-4-((0-lo)/Math.max(hi-lo,1e-9))*(70-8);
+          return `<line x1="0" y1="${mid}" x2="640" y2="${mid}" stroke="#243044" stroke-dasharray="3 4"/><path d="${linePath(c,640,70,lo,hi,4)}" fill="none" stroke="${c[c.length-1]>=0?'var(--grn)':'var(--red)'}" stroke-width="1.6"/>`;})()}
+      </svg>
+      <h3 class="muted" style="font-size:11px;margin-top:8px">PARAMETERS — live edit</h3>
+      <div class="row2">
+        <div class="field"><label>risk / aggressiveness</label><input id="e_agg" type="number" step="0.01" value="${p.aggressiveness}"></div>
+        <div class="field"><label>bias strength</label><input id="e_bias" type="number" step="0.05" value="${p.bias}"></div>
+        <div class="field"><label>trade frequency (prob)</label><input id="e_tp" type="number" step="0.05" value="${p.trade_prob}"></div>
+        <div class="field"><label>reaction delay (ticks)</label><input id="e_rd" type="number" step="1" value="${p.reaction_delay}"></div>
+        <div class="field"><label>bankroll (sim only)</label><input id="e_coins" type="number" step="50" value="${b.bankroll}"></div>
+        <div class="field"><label>memory (recent signal)</label><input type="text" value="[${(b.memory||[]).slice(-6).join(', ')}]" readonly></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="primary" onclick="saveBot('${b.bot_id}')">Apply params</button>
+        <button onclick="botAct('${b.bot_id}','${b.status==='paused'?'resume':'pause'}')">${b.status==='paused'?'▶ Resume':'⏸ Pause'} bot</button>
+        <button class="danger" onclick="botAct('${b.bot_id}','reset')">⟲ Reset bot</button>
+      </div>`;
+    $('#overlay').classList.add('show');
+  });
+}
+function closeModal(){ $('#overlay').classList.remove('show'); }
+$('#overlay').onclick=e=>{ if(e.target===$('#overlay')) closeModal(); };
+function saveBot(id){
+  api.post('/bot/'+id+'/update',{
+    aggressiveness:+$('#e_agg').value, bias:+$('#e_bias').value, trade_prob:+$('#e_tp').value,
+    reaction_delay:+$('#e_rd').value, coins:+$('#e_coins').value
+  }).then(()=>openBot(id));
+}
+function botAct(id,act){ api.post('/bot/'+id+'/'+act).then(()=>act==='reset'||act?openBot(id):closeModal()); }
+
+// ---------- boot ----------
+connect();
+loadBots(); loadAnalytics();
+setInterval(loadBots, 1500);
+setInterval(loadAnalytics, 3000);
+</script>
+</body>
+</html>

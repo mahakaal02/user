@@ -1,0 +1,10 @@
+# Core engine: standard library only. The offline, default run needs just PyYAML
+# (and even that is optional — a .json config works with zero installs).
+PyYAML>=6.0
+
+# --- optional extras (uncomment as needed) -------------------------------
+# feedparser>=6.0        # live RSS news source (sim.news.source: rss)
+#
+# The REMOTE inference adapters (FinBERT / Qwen) use only urllib from the stdlib,
+# so the simulator side needs NOTHING extra to call them. The *server* side (the
+# friend's machine) deps live in inference_server/requirements.txt.

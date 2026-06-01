@@ -1,0 +1,55 @@
+:root{
+  --bg:#0b0f17; --panel:#121826; --panel2:#0e1421; --line:#1f2a3c;
+  --ink:#dce3ef; --mut:#8294b0; --acc:#4c8dff; --grn:#3fb950; --red:#f85149;
+  --yel:#d29922; --pur:#a371f7;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+h1,h2,h3{margin:0;font-weight:600}
+.topbar{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.topbar h1{font-size:15px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--red);display:inline-block;margin-right:5px}
+.dot.on{background:var(--grn);box-shadow:0 0 6px var(--grn)}
+.badge{font-size:11px;color:var(--mut);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:2px 7px}
+button{background:#1b2435;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
+button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.danger{background:#3a1d22;border-color:#5a2a30;color:#ffb4ad}
+button.sm{padding:2px 7px;font-size:11px}
+.spacer{flex:1}
+.ctl{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--mut)}
+input[type=range]{width:90px;accent-color:var(--acc)}
+input[type=text],input[type=number]{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 6px;font:inherit;width:100%}
+.grid{display:grid;grid-template-columns:320px 1fr 350px;gap:10px;padding:10px;height:calc(100vh - 52px)}
+.col{display:flex;flex-direction:column;gap:10px;min-height:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px;min-height:0;display:flex;flex-direction:column}
+.card h3{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.scroll{overflow:auto;min-height:0}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{position:sticky;top:0;background:var(--panel);text-align:left;color:var(--mut);font-weight:500;padding:4px 6px;border-bottom:1px solid var(--line)}
+td{padding:3px 6px;border-bottom:1px solid #161e2e;white-space:nowrap}
+tr:hover td{background:#161f30;cursor:pointer}
+.pos{color:var(--grn)} .neg{color:var(--red)} .muted{color:var(--mut)}
+.pill{font-size:10px;padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
+.pill.active{color:var(--grn);border-color:#1d3a26}
+.pill.paused{color:var(--yel);border-color:#3a3119}
+.pill.dead{color:var(--mut);text-decoration:line-through}
+.feed{font-size:11px;display:flex;flex-direction:column;gap:3px}
+.feed .row{padding:3px 6px;border-radius:5px;background:var(--panel2);border-left:2px solid var(--line)}
+.feed .news{border-left-color:var(--acc)} .feed .trade{border-left-color:var(--pur)} .feed .price{border-left-color:var(--yel)}
+.kpis{display:flex;gap:10px;flex-wrap:wrap}
+.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 10px;min-width:88px}
+.kpi .v{font-size:18px;font-weight:600} .kpi .l{font-size:10px;color:var(--mut)}
+svg{display:block;width:100%}
+.legend{font-size:10px;color:var(--mut);display:flex;gap:10px;margin-top:4px}
+.sw{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:3px}
+.filters{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+select{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:3px 5px;font:inherit}
+.overlay{position:fixed;inset:0;background:rgba(4,8,14,.72);display:flex;align-items:center;justify-content:center;z-index:20}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:680px;max-width:94vw;max-height:90vh;overflow:auto;padding:16px}
+.modal h2{font-size:15px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.field{display:flex;flex-direction:column;gap:3px;margin:5px 0}
+.field label{font-size:10px;color:var(--mut)}
+.analytics td,.analytics th{padding:4px 6px}
+.bar{height:7px;border-radius:4px;background:var(--acc);display:inline-block;margin-right:5px}

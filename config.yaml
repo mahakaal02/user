@@ -1,0 +1,78 @@
+# ===========================================================================
+#  Canonical config — REMOTE inference (the "friend's machine" / Mode A & B).
+#  Switch any backend by editing values here only. Bot code never changes.
+#  URLs come from env vars (with defaults) so secrets/hosts aren't hardcoded:
+#      export FINBERT_URL=http://192.168.1.50:8001/finbert
+#      export QWEN_URL=http://192.168.1.50:8002/qwen
+# ===========================================================================
+
+inference:
+  # Which backend answers each capability. Mix freely.
+  sentiment_backend: finbert_api      # .sentiment()  → FinBERT
+  event_backend:     qwen_api         # .event_extract() → Qwen
+  reasoning_backend: qwen_api         # .reasoning()  → Qwen
+
+  # If a remote box is unreachable, degrade to the local heuristic instead of
+  # crashing the run (set false to hard-fail instead).
+  remote_fallback_local: true
+
+  finbert_api:
+    type: finbert_api
+    url: "${FINBERT_URL:-http://YOUR_FRIEND_MACHINE:8001/finbert}"
+    timeout_s: 5
+    retries: 2
+
+  qwen_api:
+    type: qwen_api
+    url: "${QWEN_URL:-http://YOUR_FRIEND_MACHINE:8002/qwen}"
+    timeout_s: 20
+    retries: 2
+
+  cache:
+    enabled: true        # per-tick dedup — enforces "no per-bot inference"
+    scope: tick
+
+market:
+  mode: sim              # 'sim' (in-process AMM) or 'http' (drive the real bet API)
+  sim:
+    yes_shares: 50000.0   # pool depth scaled to the ~1M-coin capital base
+    no_shares: 50000.0
+    history_len: 64
+  http:                  # only used when mode: http
+    base_url: "${BET_URL:-http://localhost:3100}"
+    market_id: "${BET_MARKET_ID:-demo-market}"
+    trade_path: /api/trade
+    state_path: /api/markets/{id}/state
+    # e.g. "Cookie: next-auth.session-token=..."  or  "Authorization: Bearer ..."
+    auth_header: "${BET_AUTH_HEADER:-}"
+
+bots:
+  defaults:
+    coins: 1000.0
+    memory_len: 16
+    max_trade_fraction: 0.34
+  jitter:                # per-bot heterogeneity (deterministic from seed)
+    bias: 0.15
+    aggressiveness: 0.3
+    reaction_spread: 2
+  population:
+    - { type: momentum,      count: 220, params: { aggressiveness: 0.07, reaction_delay: 1 } }
+    - { type: contrarian,    count: 160, params: { aggressiveness: 0.06, reaction_delay: 1 } }
+    - { type: news_reactive, count: 140, params: { aggressiveness: 0.08, reaction_delay: 0, smooth: 0.85 } }
+    - { type: overconfident, count: 120, params: { aggressiveness: 0.10, reaction_delay: 1 } }
+    - { type: herd,          count: 240, params: { aggressiveness: 0.06, reaction_delay: 2 } }
+    - { type: noise,         count: 120, params: { aggressiveness: 0.04, reaction_delay: 0, smooth: 1.0, trade_prob: 0.9 } }
+
+sim:
+  ticks: 120
+  seed: 7
+  progress_every: 0
+  resolve_outcome: null        # 'YES' / 'NO' / null (mark-to-market if null)
+  out: null
+  news:
+    source: synthetic          # synthetic | stored | rss
+    drizzle_prob: 0.3
+    # regimes: [ { start: 12, end: 28, pool: [...], prob: 0.85 }, ... ]  # override the narrative
+    # shocks:  { 8: ["..."], 55: ["..."] }                              # one-off exact-tick events
+    # For stored: { source: stored, path: data/news.jsonl }
+    # For rss:    { source: rss, urls: ["https://feeds.reuters.com/reuters/businessNews"], per_tick: 1 }

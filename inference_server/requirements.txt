@@ -1,0 +1,10 @@
+# Friend's-machine inference server deps. Only needed on the box that serves
+# the models — the simulator itself needs none of these.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
+# --- real models (optional; the server falls back to a heuristic without them) ---
+# transformers>=4.40     # FinBERT (ProsusAI/finbert)
+# torch>=2.2             # backend for transformers
+# Qwen: install per your serving choice (vLLM / Ollama / transformers) and wire
+# it into the marked section of server.py's /qwen handler.

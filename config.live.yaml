@@ -1,0 +1,44 @@
+# ===========================================================================
+#  Live Kalki Exchange fleet config. Drives the REAL bet market via its
+#  internal API. Point base_url at a local instance first, then production by
+#  changing ONLY this file / env. URLs + secret come from env (never hardcoded).
+#
+#    export KALKI_URL=https://kalki.bet/markets
+#    export INTERNAL_API_SECRET=...           # must match the bet server's .env
+# ===========================================================================
+
+exchange:
+  # NOTE: include the app's basePath (/markets). Local: http://localhost:3100/markets
+  base_url: "${KALKI_URL:-http://localhost:3100/markets}"
+  internal_secret: "${INTERNAL_API_SECRET:-CHANGE_ME_set_INTERNAL_API_SECRET}"
+  timeout_s: 15
+
+fleet:
+  # personality distribution (weights) — mirrors the offline simulator
+  mix: { momentum: 22, contrarian: 16, news_reactive: 14, overconfident: 12, herd: 24, noise: 12 }
+  aggressiveness: 0.05         # fraction of bankroll per conviction-unit
+  max_trade_coins: 120         # hard cap per trade (keeps thin markets from snapping)
+  min_trade_coins: 10
+  trade_prob: 0.7              # chance a selected bot acts on a given tick
+  reaction_delay: 1
+
+pacing:
+  cycle_interval_s: 2.0        # seconds between cycles (real-time pacing)
+  trades_per_cycle: 40         # (bot, market) decisions evaluated per cycle
+  comment_rate: 0.15           # fraction of successful trades that also comment
+  signal_refresh_cycles: 5     # recompute each market's shared inference signal every N cycles
+
+inference:                     # per-market title sentiment — shared, NOT per-bot
+  sentiment_backend: local_heuristic
+  event_backend: local_heuristic
+  reasoning_backend: local_heuristic
+  # For the real thing, point these at FinBERT/Qwen (see config.yaml):
+  #   sentiment_backend: finbert_api
+  #   reasoning_backend: qwen_api
+  cache: { enabled: true, scope: tick }
+
+comments:
+  backend: template            # template (offline) | llm (Qwen one-liners)
+  qwen_url: "${QWEN_URL:-}"     # set to use the LLM for comments
+
+seed: 7

@@ -1,0 +1,98 @@
+{
+  "inference": {
+    "sentiment_backend": "local_heuristic",
+    "event_backend": "local_heuristic",
+    "reasoning_backend": "local_heuristic",
+    "local_heuristic": {
+      "type": "local_heuristic"
+    },
+    "cache": {
+      "enabled": true,
+      "scope": "tick"
+    }
+  },
+  "market": {
+    "mode": "sim",
+    "sim": {
+      "yes_shares": 50000.0,
+      "no_shares": 50000.0,
+      "history_len": 64
+    }
+  },
+  "bots": {
+    "defaults": {
+      "coins": 1000.0,
+      "memory_len": 16,
+      "max_trade_fraction": 0.34
+    },
+    "jitter": {
+      "bias": 0.15,
+      "aggressiveness": 0.3,
+      "reaction_spread": 2
+    },
+    "population": [
+      {
+        "type": "momentum",
+        "count": 220,
+        "params": {
+          "aggressiveness": 0.07,
+          "reaction_delay": 1
+        }
+      },
+      {
+        "type": "contrarian",
+        "count": 160,
+        "params": {
+          "aggressiveness": 0.06,
+          "reaction_delay": 1
+        }
+      },
+      {
+        "type": "news_reactive",
+        "count": 140,
+        "params": {
+          "aggressiveness": 0.08,
+          "reaction_delay": 0,
+          "smooth": 0.85
+        }
+      },
+      {
+        "type": "overconfident",
+        "count": 120,
+        "params": {
+          "aggressiveness": 0.1,
+          "reaction_delay": 1
+        }
+      },
+      {
+        "type": "herd",
+        "count": 240,
+        "params": {
+          "aggressiveness": 0.06,
+          "reaction_delay": 2
+        }
+      },
+      {
+        "type": "noise",
+        "count": 120,
+        "params": {
+          "aggressiveness": 0.04,
+          "reaction_delay": 0,
+          "smooth": 1.0,
+          "trade_prob": 0.9
+        }
+      }
+    ]
+  },
+  "sim": {
+    "ticks": 120,
+    "seed": 7,
+    "progress_every": 40,
+    "resolve_outcome": null,
+    "out": null,
+    "news": {
+      "source": "synthetic",
+      "drizzle_prob": 0.3
+    }
+  }
+}
