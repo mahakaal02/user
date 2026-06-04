@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import time
 from collections import deque
 
@@ -143,6 +144,7 @@ class FleetRunner:
         self.hist: dict[str, deque] = {}           # market_id -> price history
         self.signals: dict[str, object] = {}       # market_id -> shared SignalLayer
         self.titles: dict[str, str] = {}
+        self.slugs: dict[str, str] = {}            # market_id -> slug (for admin-panel URLs)
         self._market_news: dict[str, list] = {}    # market_id -> real headlines (latest)
         self._seen_markets: set[str] = set()
         self.stats = {"trades": 0, "comments": 0, "rejects": 0, "cycles": 0, "news_markets": 0}
@@ -155,6 +157,58 @@ class FleetRunner:
         self.kill_file = KILL_FILE
         self._consec_fail = 0
         self._breaker_armed = False
+        # --- operator-injected markets (admin panel) — force-included in the
+        #     active set so bots trade them alongside the auto-discovered ones.
+        #     Thread-safe: the admin server writes from another thread.
+        self._injected: dict[str, dict] = {}
+        self._inject_lock = threading.Lock()
+        # --- crowd-simulation hooks (selection + logging only; default off) ---
+        self.attention = None      # live.crowd.AttentionModel | None — biases market SELECTION
+        self.sim_logger = None     # live.sim_logger.SimLogger | None — instrumentation
+
+    # -- operator market injection (admin panel; additive, no trade-logic change)
+    def inject_market(self, market: dict) -> bool:
+        """Force-include a market in the active set. ``market`` is a normalized
+        dict (id/title/yesPrice/…) resolved by the admin panel. Returns False if
+        it's already active. Bots pick it up on the next cycle like any other."""
+        mid = market.get("id")
+        if not mid:
+            return False
+        with self._inject_lock:
+            new = mid not in self._injected and mid not in self._seen_markets
+            self._injected[mid] = market
+        return new
+
+    def _merge_injected(self, markets: list[dict]) -> list[dict]:
+        with self._inject_lock:
+            known = {m["id"] for m in markets}
+            extra = [m for mid, m in self._injected.items() if mid not in known]
+        return markets + extra
+
+    def active_markets(self) -> list[dict]:
+        """Read-only snapshot for the admin panel: which markets the fleet is on
+        (slug included so the panel can build correct market URLs)."""
+        with self._inject_lock:
+            injected = dict(self._injected)
+        out: list[dict] = []
+        seen_ids: set[str] = set()
+        for mid in list(self._seen_markets):
+            hist = self.hist.get(mid)
+            out.append({
+                "id": mid,
+                "slug": self.slugs.get(mid, mid),
+                "title": self.titles.get(mid, ""),
+                "yesPrice": (round(hist[-1], 4) if hist else None),
+                "injected": mid in injected,
+            })
+            seen_ids.add(mid)
+        # Surface a just-injected market immediately (before its first cycle).
+        for mid, m in injected.items():
+            if mid not in seen_ids:
+                out.append({"id": mid, "slug": m.get("slug", mid),
+                            "title": m.get("title", ""), "yesPrice": m.get("yesPrice"),
+                            "injected": True})
+        return out
 
     # -- setup ------------------------------------------------------------- #
     def setup(self) -> None:
@@ -176,7 +230,7 @@ class FleetRunner:
 
     # -- market refresh ---------------------------------------------------- #
     def refresh_markets(self, cycle: int) -> list[dict]:
-        markets = self.client.list_markets()
+        markets = self._merge_injected(self.client.list_markets())   # + operator-added markets
         refresh_every = self.cfg["pacing"].get("signal_refresh_cycles", 5)
         fetch_budget = self.cfg.get("news_feed", {}).get("max_fetch_per_cycle", 6)
         fetched = 0
@@ -184,6 +238,8 @@ class FleetRunner:
             mid = m["id"]
             self.hist.setdefault(mid, deque(maxlen=64)).append(m["yesPrice"])
             self.titles[mid] = m["title"]
+            if m.get("slug"):
+                self.slugs[mid] = m["slug"]
             if mid not in self._seen_markets:
                 self._seen_markets.add(mid)
                 print(f"  + onboarded market '{m['title'][:48]}' ({mid[:8]}) @ {m['yesPrice']:.3f}")
@@ -226,11 +282,17 @@ class FleetRunner:
         trade_prob = self.cfg["fleet"]["trade_prob"]
         pick = self.rng_hub.stream("pick")
 
+        # crowd-sim: compute this cycle's attention weights once (selection only)
+        if self.attention is not None:
+            self.attention.begin_cycle(cycle, markets, self.signals, self.hist, pick)
+
         for _ in range(per_cycle):
             if self._kill_engaged():           # near-immediate stop, always between trades
                 break
             bot = self.bots[pick.randrange(len(self.bots))]
-            m = markets[pick.randrange(len(markets))]
+            # market SELECTION: attention-weighted in crowd-sim, else uniform (unchanged)
+            m = self.attention.pick_market(pick) if self.attention is not None \
+                else markets[pick.randrange(len(markets))]
             if pick.random() > trade_prob:
                 continue
             signal = self.signals[m["id"]]
@@ -242,7 +304,12 @@ class FleetRunner:
             order = self._decide(bot, m["id"], intent)
             if order is None:
                 continue
+            if self.sim_logger is not None:    # instrument the decided action (tagged)
+                self.sim_logger.log_decision(cycle, bot, m, order, signal)
             self._execute(bot, m, order, comment_rate, pick)
+
+        if self.attention is not None and self.sim_logger is not None:
+            self.sim_logger.log_cycle(cycle, self.attention, self.signals)
 
     def _decide(self, bot: LiveBot, market_id: str, intent: float):
         pos = bot.pos.get(market_id, {"YES": 0.0, "NO": 0.0})

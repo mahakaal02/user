@@ -1,0 +1,36 @@
+# Local internal-mode run against a LOCAL bet instance (sandbox).
+#   KALKI_URL=http://localhost:3100/markets INTERNAL_API_SECRET=<local> \
+#     python run_live.py --config config.local.yaml --admin
+exchange:
+  mode: internal
+  base_url: "${KALKI_URL:-http://localhost:3100/markets}"
+  internal_secret: "${INTERNAL_API_SECRET:-}"
+  timeout_s: 15
+
+fleet:
+  mix: { momentum: 22, contrarian: 16, news_reactive: 14, overconfident: 12, herd: 24, noise: 12 }
+  aggressiveness: 0.05
+  max_trade_coins: 120
+  min_trade_coins: 10
+  trade_prob: 0.7
+  reaction_delay: 1
+
+pacing:
+  cycle_interval_s: 2.0
+  trades_per_cycle: 30
+  comment_rate: 0.10
+  signal_refresh_cycles: 5
+
+inference:                # fast, offline — keeps 41 markets snappy for the panel demo
+  sentiment_backend: local_heuristic
+  event_backend: local_heuristic
+  reasoning_backend: local_heuristic
+  cache: { enabled: true, scope: tick }
+
+comments:
+  backend: template
+
+news_feed:
+  enabled: false
+
+seed: 7
