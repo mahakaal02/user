@@ -156,10 +156,46 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="run a single cycle and exit")
     ap.add_argument("--fleet-size", type=int, default=None,
                     help="public mode: how many bots to register/login (overrides exchange.fleet_size)")
+    ap.add_argument("--admin", type=int, nargs="?", const=8090, default=None,
+                    help="serve the LOCAL-only fleet admin panel on this port (default 8090): "
+                         "shows traded markets + URLs, and adds a market from a pasted local URL")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="run the full pipeline (load bots/markets, signals, decisions, safety checks) "
+                         "but submit NO trades/comments — log each as DRY RUN instead")
+    ap.add_argument("--sim", action="store_true",
+                    help="CROWD SIMULATION mode: attention-weighted market selection + new-market "
+                         "boost + crowd logging (SANDBOX ONLY; refuses production). Reads the "
+                         "`simulation:` config section.")
+    ap.add_argument("--control", action="store_true",
+                    help="with --sim: CONTROL arm — force Qwen OFF (local heuristic), no news attention")
     args = ap.parse_args()
 
     cfg = apply_admin_endpoints(load_config(args.config))
     ex = cfg["exchange"]
+
+    # --- crowd-simulation mode (selection/logging layer only) -------------- #
+    run_mode = "LIVE"
+    if args.sim:
+        if "kalki.bet" in (ex.get("base_url") or ""):
+            raise SystemExit("FATAL: crowd-simulation (--sim) refuses to target PRODUCTION "
+                             "(kalki.bet). Point KALKI_URL at a local/sandbox instance — this "
+                             "is a closed agent-based simulation, not a real-user system.")
+        if args.control:                       # CONTROL arm: remove all Qwen influence
+            for k in ("sentiment_backend", "event_backend", "reasoning_backend"):
+                cfg["inference"][k] = "local_heuristic"
+            cfg.setdefault("comments", {})["backend"] = "template"
+        run_mode = ("DRY_RUN_MODE" if args.dry_run else
+                    "CONTROL_MODE" if args.control else "SIMULATION_MODE")
+    qwen_active = (not args.control) and str(cfg["inference"].get("reasoning_backend", "")).startswith("qwen")
+
+    # Start the admin panel FIRST so it's reachable immediately — before the
+    # (potentially slow or failing) fleet startup. The runner attaches once built.
+    panel = None
+    if args.admin is not None:
+        from live.admin_panel import FleetAdminPanel
+        panel = FleetAdminPanel(None, ex["base_url"], port=args.admin)
+        panel.serve_in_thread()
+
     comment_gen = CommentGenerator(
         backend=cfg["comments"].get("backend", "template"),
         qwen_url=cfg["comments"].get("qwen_url") or None,
@@ -180,7 +216,11 @@ def main() -> None:
           + (f"  → LLM drives {'/'.join(llm_caps)}" if llm_caps else ""))
     client, mode = _build_exchange(cfg, args.fleet_size)
     if mode == "internal":
-        _validate_internal_startup(ex, client)   # fail-fast before any trading
+        _validate_internal_startup(ex, client)   # fail-fast before any trading (read-only probe)
+    if args.dry_run:
+        from live.dry_run import DryRunClient
+        client = DryRunClient(client)            # reads pass through; trades/comments suppressed
+        print("  *** DRY RUN — full pipeline runs; NO trades/comments are submitted to the exchange ***")
     users = client.list_bot_users()
     print(f"  {len(users)} bot users on the exchange")
     markets = client.list_markets()
@@ -197,7 +237,21 @@ def main() -> None:
         raise SystemExit(f"No bot users — {hint}")
 
     runner = FleetRunner(client, comment_gen, inference, cfg, rng_hub, news_feed=news_feed)
+    if args.sim:
+        from live.crowd import AttentionModel
+        from live.sim_logger import SimLogger
+        sim_cfg = cfg.get("simulation", {})
+        runner.attention = AttentionModel(sim_cfg, qwen_active=qwen_active)
+        runner.sim_logger = SimLogger(sim_cfg.get("log_dir", "runs/sim_logs"), run_mode,
+                                      label=sim_cfg.get("label", "SIMULATION_MODE"), qwen_active=qwen_active)
+        nb = sim_cfg.get("new_market_boost", {})
+        print(f"  *** {run_mode} · crowd attention ON · qwen_active={qwen_active} · "
+              f"new-market target share={nb.get('target_new_share')} · logs → {runner.sim_logger.log_dir} ***")
+    if panel is not None:
+        panel.runner = runner   # fleet is up → panel now shows live markets + accepts injects
     runner.run(cycles=1 if args.once else args.cycles)
+    if args.sim and runner.sim_logger is not None:
+        runner.sim_logger.close()
     if llm_caps:
         # Proof the LLM actually drove the run: real upstream calls made to Qwen
         # (the per-tick cache dedupes, so this is # of distinct market signals).

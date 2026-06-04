@@ -1,0 +1,58 @@
+# ============================================================================
+#  CROWD-SIMULATION config — controlled agent-based market-behavior study.
+#  SANDBOX ONLY. Crowd mode refuses to run against production (kalki.bet).
+#  Touches only attention/selection/logging — never intent/_decide/size_coins,
+#  the AMM, or the safety guardrails.
+# ============================================================================
+
+exchange:
+  mode: internal
+  base_url: "${KALKI_URL:-http://localhost:3100/markets}"   # local sandbox by default
+  internal_secret: "${INTERNAL_API_SECRET:-}"
+  timeout_s: 15
+
+simulation:
+  enabled: true                      # crowd simulation layer on (also needs --sim)
+  label: "SIMULATION_MODE"           # stamped on EVERY logged action (must be non-empty)
+  log_dir: "runs/sim_logs"           # JSONL instrumentation output
+  attention:                         # market-SELECTION weighting (not trade direction)
+    base_attention: 1.0              # baseline weight every market gets
+    qwen_weight: 3.0                 # multiplier on the Qwen news score (forced 0 in CONTROL)
+    momentum_weight: 1.5             # multiplier on |recent price move|
+    herd_multiplier: 2.0             # positive feedback: recently-traded markets attract more
+    noise_floor: 0.5                 # baseline random selection pressure (always > 0)
+    news_delay_cycles: 2             # reaction delay — attention to news ramps over N cycles (EMA)
+  new_market_boost:                  # exploration variable for newly-created markets
+    target_new_share: 0.60           # ~60% of selection mass flows to the new-market bucket
+    decay_function: exponential      # exponential | power_law
+    half_life_s: 1800                # boost halves every 30 min (within the new bucket)
+    cutoff_age_s: 7200               # after 2 h a market is no longer "new"
+  reaction_delay_variance: 1         # per-bot jitter (cycles) so reactions aren't synchronized
+
+fleet:
+  mix: { momentum: 22, contrarian: 16, news_reactive: 14, overconfident: 12, herd: 24, noise: 12 }
+  aggressiveness: 0.05
+  max_trade_coins: 120
+  min_trade_coins: 10
+  trade_prob: 0.7
+  reaction_delay: 1
+
+pacing:
+  cycle_interval_s: 2.0
+  trades_per_cycle: 60
+  comment_rate: 0.05
+  signal_refresh_cycles: 5
+
+inference:                           # SIMULATION uses Qwen if runs/model_endpoints.json is set;
+  sentiment_backend: local_heuristic # CONTROL (--control) forces all three to local_heuristic.
+  event_backend: local_heuristic
+  reasoning_backend: local_heuristic
+  cache: { enabled: true, scope: tick }
+
+comments:
+  backend: template
+
+news_feed:
+  enabled: false                     # flip true (+ Qwen) for the news-reactive arm
+
+seed: 7

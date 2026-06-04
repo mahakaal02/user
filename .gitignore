@@ -19,9 +19,11 @@ frontend/dist/
 # Simulation run logs (regenerated) — but keep the canonical sample for --replay
 runs/*.jsonl
 !runs/demo.jsonl
+# crowd-simulation instrumentation output (regenerated)
+runs/sim_logs/
 
-# Admin-saved model endpoints (may contain private URLs)
-runs/model_endpoints.json
+# Admin-saved model endpoints (may contain the private Qwen API key) — incl. backups
+runs/model_endpoints.json*
 
 # Public-fleet bot accounts (holds registered bot passwords — never commit)
 runs/kalki_accounts.json
