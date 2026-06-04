@@ -1,16 +1,22 @@
 # ===========================================================================
 #  Canonical config — REMOTE inference (the "friend's machine" / Mode A & B).
 #  Switch any backend by editing values here only. Bot code never changes.
-#  URLs come from env vars (with defaults) so secrets/hosts aren't hardcoded:
+#  URLs/keys come from env vars (with defaults) so secrets/hosts aren't hardcoded:
 #      export FINBERT_URL=http://192.168.1.50:8001/finbert
-#      export QWEN_URL=http://192.168.1.50:8002/qwen
+#      export QWEN_URL=http://192.168.1.50:8002/qwen          # legacy custom server
+#  Real hosted Qwen over the OpenAI chat protocol (e.g. PodStack):
+#      export QWEN_OPENAI_URL=https://cloud.podstack.ai/api/v1/podvirt/chat/completions
+#      export QWEN_API_KEY=psk_...                            # NEVER commit the key
+#      export QWEN_MODEL=qwen25-05b-instruct                  # the served model id
+#  …then set the *_backend below to `qwen_openai`.
 # ===========================================================================
 
 inference:
   # Which backend answers each capability. Mix freely.
+  # For a real hosted Qwen, change qwen_api → qwen_openai on these two lines.
   sentiment_backend: finbert_api      # .sentiment()  → FinBERT
-  event_backend:     qwen_api         # .event_extract() → Qwen
-  reasoning_backend: qwen_api         # .reasoning()  → Qwen
+  event_backend:     qwen_api         # .event_extract() → Qwen   (or: qwen_openai)
+  reasoning_backend: qwen_api         # .reasoning()  → Qwen   (or: qwen_openai)
 
   # If a remote box is unreachable, degrade to the local heuristic instead of
   # crashing the run (set false to hard-fail instead).
@@ -22,9 +28,21 @@ inference:
     timeout_s: 5
     retries: 2
 
+  # Legacy Qwen: the project's custom {"task": ...} server (inference_server/server.py).
   qwen_api:
     type: qwen_api
     url: "${QWEN_URL:-http://YOUR_FRIEND_MACHINE:8002/qwen}"
+    timeout_s: 20
+    retries: 2
+
+  # Real hosted Qwen over the OpenAI-compatible /v1/chat/completions protocol
+  # (e.g. PodStack). Bearer api_key + a model id. To use it, point the
+  # event/reasoning backends above at `qwen_openai`.
+  qwen_openai:
+    type: qwen_openai
+    url:     "${QWEN_OPENAI_URL:-https://cloud.podstack.ai/api/v1/podvirt/chat/completions}"
+    api_key: "${QWEN_API_KEY:-}"
+    model:   "${QWEN_MODEL:-qwen25-05b-instruct}"
     timeout_s: 20
     retries: 2
 

@@ -2,10 +2,12 @@
 One-liner comment generation.
 
 Two pluggable backends (selected in config, mirroring the inference layer):
-  * ``llm``      — POST {task:"comment", prompt} to a Qwen text endpoint and use
-                   the returned line. This is the "USE the LLM inference"
-                   path — wire ``qwen_url`` to the friend's Qwen server (the
-                   reference server in inference_server/server.py serves it).
+  * ``llm``      — ask a Qwen text endpoint for the line. Two protocols, picked
+                   automatically: an OpenAI-compatible chat endpoint (an api_key/
+                   model is set, or the URL is ``.../chat/completions`` — e.g. a
+                   hosted Qwen on PodStack) is called with Bearer auth + a chat
+                   completion; otherwise the legacy ``{task:"comment", prompt}``
+                   custom server (inference_server/server.py) is used.
   * ``template`` — offline, deterministic human-like one-liners. The default so
                    the fleet runs with no model; also the fallback if the LLM
                    call fails.
@@ -18,6 +20,8 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+
+from sim.inference.openai_chat import OpenAIChatClient, OpenAIChatError, is_openai_style
 
 # Human-like retail one-liners (lowercase, casual — like real comment sections).
 _BULL = [
@@ -55,9 +59,13 @@ _BEAR_STRONG = [
 
 
 class CommentGenerator:
-    def __init__(self, backend: str = "template", qwen_url: str | None = None, timeout_s: float = 20.0) -> None:
+    def __init__(self, backend: str = "template", qwen_url: str | None = None,
+                 timeout_s: float = 20.0, qwen_api_key: str | None = None,
+                 qwen_model: str | None = None) -> None:
         self.backend = backend
         self.qwen_url = qwen_url
+        self.qwen_api_key = qwen_api_key or ""
+        self.qwen_model = qwen_model or ""
         self.timeout = timeout_s
 
     def generate(self, action: str, outcome: str, conviction: float, market_title: str, rng) -> str:
@@ -83,6 +91,24 @@ class CommentGenerator:
             f"Market: '{title}'. Your stance: {stance}, conviction {conviction:.0%}. "
             f"Write ONE short, casual comment (max 12 words), lowercase, no hashtags, no quotes."
         )
+        if is_openai_style(self.qwen_url, self.qwen_api_key):
+            return self._llm_openai(prompt)
+        return self._llm_custom(prompt)
+
+    def _llm_openai(self, prompt: str) -> str | None:
+        """OpenAI-compatible chat endpoint (e.g. PodStack)."""
+        try:
+            text = OpenAIChatClient(
+                url=self.qwen_url, api_key=self.qwen_api_key, model=self.qwen_model,
+                timeout_s=self.timeout, retries=1, temperature=0.8, max_tokens=40,
+            ).chat("You write short, casual, lowercase retail-trader comments.", prompt)
+            text = text.strip().strip('"').strip()
+            return text or None
+        except (OpenAIChatError, ValueError):
+            return None
+
+    def _llm_custom(self, prompt: str) -> str | None:
+        """Legacy custom server: POST {task:"comment", prompt} → {"text": ...}."""
         try:
             data = json.dumps({"task": "comment", "prompt": prompt}).encode("utf-8")
             req = urllib.request.Request(

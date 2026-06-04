@@ -23,6 +23,9 @@ runs/*.jsonl
 # Admin-saved model endpoints (may contain private URLs)
 runs/model_endpoints.json
 
+# Public-fleet bot accounts (holds registered bot passwords — never commit)
+runs/kalki_accounts.json
+
 # Env / secrets (never commit)
 .env
 .env.*

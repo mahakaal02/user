@@ -5,20 +5,25 @@ Build the inference client from config — the single place backends are chosen.
 
     inference:
       sentiment_backend: finbert_api    # who answers .sentiment()
-      event_backend:     qwen_api       # who answers .event_extract()
-      reasoning_backend: qwen_api       # who answers .reasoning()
+      event_backend:     qwen_openai    # who answers .event_extract()
+      reasoning_backend: qwen_openai    # who answers .reasoning()
 
 The :class:`CompositeInferenceClient` routes each method to the chosen backend
 instance, so you can mix FinBERT for sentiment with Qwen for reasoning, or point
 all three at one local backend — without touching a line of bot code. The whole
 thing is then wrapped in the per-tick cache.
+
+Backend ``type`` values understood here: ``local_heuristic``, ``replay``,
+``finbert_api``, ``qwen_api`` (the custom ``{"task": ...}`` contract), and
+``qwen_openai`` (OpenAI ``/v1/chat/completions``, e.g. a hosted Qwen on PodStack
+— Bearer ``api_key`` + ``model``).
 """
 from __future__ import annotations
 
 from .base import InferenceClient
 from .caching import CachingInferenceClient
 from .local_heuristic import LocalHeuristicClient
-from .remote import FinBERTAPIClient, QwenAPIClient
+from .remote import FinBERTAPIClient, QwenAPIClient, QwenChatClient
 from .replay import ReplayInferenceClient
 
 
@@ -40,6 +45,16 @@ def _build_backend(name: str, params: dict, fallback: InferenceClient | None) ->
     if btype == "qwen_api":
         return QwenAPIClient(
             url=params.get("url", ""),
+            timeout_s=params.get("timeout_s", 20.0),
+            retries=params.get("retries", 2),
+            backoff_s=params.get("backoff_s", 0.5),
+            fallback=fallback,
+        )
+    if btype in ("qwen_openai", "qwen_chat"):
+        return QwenChatClient(
+            url=params.get("url", ""),
+            api_key=params.get("api_key", ""),
+            model=params.get("model", ""),
             timeout_s=params.get("timeout_s", 20.0),
             retries=params.get("retries", 2),
             backoff_s=params.get("backoff_s", 0.5),

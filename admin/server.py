@@ -137,12 +137,20 @@ class Handler(BaseHTTPRequestHandler):
         # Endpoint connectivity test makes an external network call → must NOT
         # hold the sim lock (would stall ticks for up to the timeout).
         if path == "/models/test":
-            return self._send_json(sim.test_endpoint(body.get("kind", "qwen"), body.get("url", "")))
+            return self._send_json(sim.test_endpoint(
+                body.get("kind", "qwen"), body.get("url", ""),
+                api_key=body.get("api_key"), model=body.get("model"),
+            ))
 
         with sim._lock:
-            # --- model endpoints (Qwen / embedding URLs, both optional) ---
+            # --- model endpoints (Qwen URL/key/model + embedding URL, all optional) ---
             if path == "/models":
-                sim.set_model_endpoints(qwen_url=body.get("qwen_url"), embedding_url=body.get("embedding_url"))
+                sim.set_model_endpoints(
+                    qwen_url=body.get("qwen_url"),
+                    qwen_api_key=body.get("qwen_api_key"),
+                    qwen_model=body.get("qwen_model"),
+                    embedding_url=body.get("embedding_url"),
+                )
                 return self._send_json({"ok": True, "models": sim.model_status()})
             # --- per-bot controls ---
             if path.startswith("/bot/"):

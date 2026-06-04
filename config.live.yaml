@@ -8,10 +8,21 @@
 # ===========================================================================
 
 exchange:
-  # NOTE: include the app's basePath (/markets). Local: http://localhost:3100/markets
-  base_url: "${KALKI_URL:-http://localhost:3100/markets}"
-  internal_secret: "${INTERNAL_API_SECRET:-CHANGE_ME_set_INTERNAL_API_SECRET}"
-  timeout_s: 15
+  # How the fleet authenticates to the exchange:
+  #   public   — bots are REAL users via the regular register/login API; no
+  #              INTERNAL_API_SECRET, no DB access. Accounts persist locally in
+  #              runs/kalki_accounts.json (gitignored). This is how you drive
+  #              production kalki.bet without server-side access.
+  #   internal — Bearer INTERNAL_API_SECRET against /api/internal/*; bots are
+  #              seeded in the DB (bet/bet scripts/seed-bots.ts).
+  mode: public
+  # NOTE: include the app's basePath (/markets). Prod: https://kalki.bet/markets
+  base_url: "${KALKI_URL:-https://kalki.bet/markets}"
+  fleet_size: 6                # public mode: how many bots to register + log in (throttle-bound)
+  market_limit: 12             # markets to trade (public trending max 20). Each gets ONE shared
+                               # LLM signal/refresh when Qwen drives actions, so this caps LLM cost.
+  internal_secret: "${INTERNAL_API_SECRET:-CHANGE_ME_set_INTERNAL_API_SECRET}"  # internal mode only
+  timeout_s: 20
 
 fleet:
   # personality distribution (weights) — mirrors the offline simulator
@@ -24,7 +35,10 @@ fleet:
 
 pacing:
   cycle_interval_s: 2.0        # seconds between cycles (real-time pacing)
-  trades_per_cycle: 40         # (bot, market) decisions evaluated per cycle
+  # (bot, market) decisions per cycle. In PUBLIC mode each bot is rate-limited to
+  # 10 trades / 10s by the server, so keep this near ~2× fleet_size; raise it for
+  # large internal (Bearer-secret) fleets where there's no per-user limit.
+  trades_per_cycle: 12
   comment_rate: 0.15           # fraction of successful trades that also comment
   signal_refresh_cycles: 5     # recompute each market's shared inference signal every N cycles
 
@@ -34,12 +48,20 @@ inference:                     # per-market title sentiment — shared, NOT per-
   reasoning_backend: local_heuristic
   # For the real thing, point these at FinBERT/Qwen (see config.yaml):
   #   sentiment_backend: finbert_api
-  #   reasoning_backend: qwen_api
+  #   reasoning_backend: qwen_api          # legacy custom server, or:
+  #   reasoning_backend: qwen_openai       # hosted Qwen (OpenAI/chat, e.g. PodStack)
+  # qwen_openai:
+  #   type: qwen_openai
+  #   url:     "${QWEN_OPENAI_URL:-https://cloud.podstack.ai/api/v1/podvirt/chat/completions}"
+  #   api_key: "${QWEN_API_KEY:-}"
+  #   model:   "${QWEN_MODEL:-qwen25-05b-instruct}"
   cache: { enabled: true, scope: tick }
 
 comments:
   backend: template            # template (offline) | llm (Qwen one-liners)
-  qwen_url: "${QWEN_URL:-}"     # set to use the LLM for comments
+  qwen_url: "${QWEN_URL:-}"     # set to use the LLM for comments (legacy or chat URL)
+  qwen_api_key: "${QWEN_API_KEY:-}"   # set (with a chat URL) → OpenAI/chat protocol
+  qwen_model: "${QWEN_MODEL:-}"       # model id for the chat protocol
 
 news_feed:                     # REAL news → per-market signal pipeline
   enabled: true                # false = market titles only (previous behaviour)
@@ -61,7 +83,9 @@ news_feed:                     # REAL news → per-market signal pipeline
       dim: 512                 # local-hashing vector size (ignored when url is set)
     refine:                    # stage 2: LLM refines ONLY the top-K (optional, off by default)
       enabled: false
-      qwen_url: "${QWEN_URL:-}"
+      qwen_url: "${QWEN_URL:-}"          # legacy custom server, or a chat URL below
+      api_key: "${QWEN_API_KEY:-}"       # set (with a chat URL) → OpenAI/chat protocol
+      model: "${QWEN_MODEL:-}"           # model id for the chat protocol
       min_score: 0.5
   max_items: 5                 # headlines per market fed to the signal engine
   min_primary: 2               # fewer than this many Google hits → pull fallback feeds
