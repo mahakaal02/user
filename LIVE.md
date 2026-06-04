@@ -11,9 +11,41 @@ price, wallets debit, comments land under human-like usernames, 1000-bot scale,
 
 ---
 
-## How it's wired (no NextAuth juggling)
+## Two ways to authenticate (`exchange.mode`)
 
-The public trade/comment endpoints are session-gated, so the fleet uses **internal
+| mode | how bots exist | how they trade | needs |
+|------|----------------|----------------|-------|
+| **`public`** (default) | register via the regular `/api/auth/register` | logged-in session → public `/api/trade` | **nothing server-side** — just the public site |
+| **`internal`** | seeded in the DB (`scripts/seed-bots.ts`) | Bearer `INTERNAL_API_SECRET` → `/api/internal/trade` | the prod secret **and** DB access to seed |
+
+`public` mode is how you drive **production kalki.bet without any server-side
+access** — the bots are ordinary users. `internal` mode is faster at scale (no
+per-user rate limit) when you *do* control the deployment.
+
+### Public mode — bots are real users (no secret, no DB)
+
+Each bot does exactly what a human does, over the public API:
+
+```
+ live/public_fleet.py   register → POST /api/auth/register        (create account)
+ (PublicBotClient,      login    → NextAuth credentials sign-in   (own session cookie)
+  one session per bot)  markets  → GET  /api/markets/trending      (public, no auth)
+                        trade    → POST /api/trade                 (as the logged-in user)
+                        comment  → POST /api/markets/{id}/comments (as the logged-in user)
+```
+
+`PublicExchangeFacade` exposes the same methods the internal `KalkiClient` does, so
+`FleetRunner` is unchanged. Accounts persist in `runs/kalki_accounts.json`
+(gitignored — holds passwords) so re-runs reuse them. Bring-up is paced to the
+server throttles (register **3/min/IP**, login **8/min/IP**); trading is capped
+at **10/10s per user** (a 429 is a soft reject), so keep `pacing.trades_per_cycle`
+near ~2× the fleet size. Each fresh account starts with the **10,000-coin signup
+bonus**. Emails use the `@sim.kalki.local` domain so the fleet is identifiable /
+purgeable.
+
+### Internal mode — Bearer secret (no NextAuth juggling)
+
+The public trade/comment endpoints are session-gated, so this mode uses **internal
 service routes** (Bearer `INTERNAL_API_SECRET`, the same pattern as the existing
 `/api/internal/wallet`). The core trade logic is shared, so a bot trade is
 byte-for-byte identical to a human one.
@@ -45,7 +77,8 @@ bots/
 ├── run_live.py            # launcher
 ├── config.live.yaml       # base_url + secret (env), fleet mix, pacing, comment backend
 └── live/
-    ├── kalki_client.py    # stdlib HTTP client for the internal routes
+    ├── kalki_client.py    # stdlib HTTP client for the internal routes (internal mode)
+    ├── public_fleet.py    # register/login bots + PublicExchangeFacade (public mode)
     ├── comment_gen.py     # one-liner comments: template (offline) | llm (Qwen)
     └── runner.py          # the fleet loop (reuses sim personalities + signals)
 ```
@@ -77,15 +110,25 @@ python run_live.py --cycles 20                          # or a bounded run
 
 Open `http://localhost:3100/markets` and watch the bots trade and comment live.
 
-### Point it at production (config/env only — no code change)
+### Point it at production kalki.bet (public mode — no secret, no DB)
+
+`config.live.yaml` already defaults to `exchange.mode: public` and
+`base_url: https://kalki.bet/markets`. Just run it — the bots register, log in,
+and trade as real users:
 
 ```bash
-export KALKI_URL=https://kalki.bet/markets       # include the /markets basePath
-export INTERNAL_API_SECRET=<prod secret>         # must match the deployed bet .env
-python run_live.py
+python run_live.py --fleet-size 6        # provisions 6 bots (first run is slow: register 3/min)
+python run_live.py --cycles 4            # bounded run; reuses the persisted accounts
 ```
 
-> Seed the prod users with the same script against the prod `DATABASE_URL`
+First run registers the fleet (paced to the throttle) and saves it to
+`runs/kalki_accounts.json`; later runs just log in and trade. Optionally enable
+**Qwen LLM comments** by setting `QWEN_*` / the admin Model Endpoints (see
+`README.md`).
+
+> **Internal mode instead** (you control the deployment): set `exchange.mode:
+> internal`, `export KALKI_URL=https://kalki.bet/markets` +
+> `INTERNAL_API_SECRET=<prod secret>`, seed users against the prod `DATABASE_URL`
 > (`BOTS_COUNT=1000 npx tsx scripts/seed-bots.ts`), then run the fleet.
 
 ---
@@ -167,7 +210,16 @@ you'd add a visible bot marker first.
 
 ## Verified
 
-Against a local `bet` (Postgres + Next.js):
+**Public mode against production `https://kalki.bet/markets`:**
+
+- 4 bots **registered + logged in** through the regular API (no internal secret,
+  no DB) — each provisioned with the 10,000-coin signup bonus.
+- Fleet onboarded all 20 trending markets and placed **11 trades across 4 cycles,
+  0 rejects**, plus a comment; a single explicit `BUY` moved a market
+  `0.74 → 0.70`. Independent `/api/me` reads afterward confirmed the debited
+  balances server-side (e.g. one bot down to `9,333`).
+
+**Internal mode against a local `bet` (Postgres + Next.js):**
 
 - `POST /api/internal/trade` moved a real market `0.12 → 0.48`, debited the wallet
   `20000 → 19200`; wrong secret → 401.

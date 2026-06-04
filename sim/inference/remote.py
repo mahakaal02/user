@@ -1,15 +1,23 @@
 """
 Remote HTTP inference adapters: FinBERT (sentiment) and Qwen (reasoning/events).
 
-Both speak plain JSON over HTTP using only the standard library (``urllib``), so
+All speak plain JSON over HTTP using only the standard library (``urllib``), so
 there is no third-party client dependency. Each adapter:
 
   * reads its URL/timeout from config (NEVER hardcoded, NEVER imported by bots),
   * POSTs a small JSON body to the friend's machine / inference server,
   * normalizes whatever comes back into the canonical schema.
 
-The expected server contract is documented in ``inference_server/server.py``
-(a runnable FastAPI reference) and in the README. Because the adapter normalizes
+There are TWO Qwen adapters, picked by config:
+
+  * :class:`QwenAPIClient`  — the project's custom ``{"task": ...}`` contract,
+    served by the reference ``inference_server/server.py`` (the friend's box).
+  * :class:`QwenChatClient` — the OpenAI-compatible ``/v1/chat/completions``
+    protocol used by hosted providers (e.g. PodStack): Bearer auth + a ``model``
+    id. It prompts the model for strict JSON and normalizes the result.
+
+The expected legacy server contract is documented in ``inference_server/server.py``
+(a runnable FastAPI reference) and in the README. Because the adapters normalize
 defensively, a server that returns slightly different keys still works.
 """
 from __future__ import annotations
@@ -19,6 +27,7 @@ import urllib.error
 import urllib.request
 
 from .base import InferenceClient, normalize_event, normalize_sentiment
+from .openai_chat import OpenAIChatClient, OpenAIChatError
 
 
 class RemoteInferenceError(RuntimeError):
@@ -152,6 +161,96 @@ class QwenAPIClient(_RemoteBase):
         try:
             raw = self._call({"task": "sentiment", "text": text})
         except RemoteInferenceError:
+            if self.fallback:
+                return self.fallback.sentiment(text)
+            raise
+        return normalize_sentiment(_coerce_json(raw))
+
+
+# System prompts that pin each capability to STRICT JSON in the canonical schema.
+# The model never sees the simulator's internals — just the headline / state text.
+_REASON_SYS = (
+    "You are a markets analyst for a binary (YES/NO) prediction market. Read the "
+    "market-state prompt and judge the net pressure on the YES price. Respond with "
+    "ONLY a compact JSON object, no prose, no markdown fences, of the form: "
+    '{"event": "<short_snake_case_label>", "impact": {"market_up": 0.0-1.0, '
+    '"market_down": 0.0-1.0}, "confidence": 0.0-1.0}. Use market_up for bullish '
+    "pressure on YES and market_down for bearish. Output strictly valid JSON."
+)
+_EVENT_SYS = (
+    "You extract the single market-moving event from a news headline for a binary "
+    "prediction market. Respond with ONLY a compact JSON object, no prose, no "
+    'fences: {"event": "<short_snake_case_label>", "impact": {"market_up": 0.0-1.0, '
+    '"market_down": 0.0-1.0}, "confidence": 0.0-1.0}. market_up = bullish for YES, '
+    "market_down = bearish. Strictly valid JSON."
+)
+_SENT_SYS = (
+    "You are a financial sentiment classifier. Respond with ONLY a compact JSON "
+    'object, no prose, no fences: {"positive": 0.0-1.0, "negative": 0.0-1.0, '
+    '"neutral": 0.0-1.0, "confidence": 0.0-1.0} where positive+negative+neutral '
+    "is approximately 1. Strictly valid JSON."
+)
+
+
+class QwenChatClient(InferenceClient):
+    """Qwen (or any LLM) behind an OpenAI-compatible chat-completions endpoint.
+
+    Unlike :class:`QwenAPIClient` (the project's custom ``{"task": ...}`` contract),
+    this adapter talks the OpenAI ``/v1/chat/completions`` protocol used by hosted
+    providers such as PodStack — Bearer-authenticated, with a ``model`` id. It
+    prompts the model to emit strict JSON for each capability and normalizes the
+    result, so nothing downstream of the inference layer changes.
+
+    Config (``type: qwen_openai``)::
+
+        reasoning_backend: qwen_openai
+        qwen_openai:
+          type: qwen_openai
+          url:     "https://cloud.podstack.ai/api/v1/podvirt/chat/completions"
+          api_key: "${QWEN_API_KEY}"
+          model:   "56673832-9a9a-4867-8128-7efbcb75c6fe"
+    """
+
+    name = "qwen_openai"
+
+    def __init__(
+        self,
+        url: str,
+        api_key: str = "",
+        model: str = "",
+        timeout_s: float = 20.0,
+        retries: int = 2,
+        backoff_s: float = 0.5,
+        fallback: InferenceClient | None = None,
+    ) -> None:
+        self.client = OpenAIChatClient(
+            url=url, api_key=api_key, model=model,
+            timeout_s=timeout_s, retries=retries, backoff_s=backoff_s,
+        )
+        self.fallback = fallback
+
+    def reasoning(self, prompt: str) -> dict:
+        try:
+            raw = self.client.chat(_REASON_SYS, prompt, response_format_json=True)
+        except OpenAIChatError:
+            if self.fallback:
+                return self.fallback.reasoning(prompt)
+            raise
+        return normalize_event(_coerce_json(raw))
+
+    def event_extract(self, text: str) -> dict:
+        try:
+            raw = self.client.chat(_EVENT_SYS, text, response_format_json=True)
+        except OpenAIChatError:
+            if self.fallback:
+                return self.fallback.event_extract(text)
+            raise
+        return normalize_event(_coerce_json(raw))
+
+    def sentiment(self, text: str) -> dict:
+        try:
+            raw = self.client.chat(_SENT_SYS, text, response_format_json=True)
+        except OpenAIChatError:
             if self.fallback:
                 return self.fallback.sentiment(text)
             raise

@@ -17,6 +17,7 @@ local estimates and lets the server reject anything stale (graceful).
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from collections import deque
 
@@ -26,6 +27,31 @@ from sim.signals import build_signal_layer
 
 from .comment_gen import CommentGenerator
 from .kalki_client import KalkiClient
+
+# --------------------------------------------------------------------------- #
+#  Runtime safety guardrails (audit fixes). These ONLY veto / pause / stop —
+#  they never change the trade decision math (intent / _decide / size_coins).
+# --------------------------------------------------------------------------- #
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+KILL_FILE = os.path.join(_REPO_ROOT, "runs", "BOT_KILL_SWITCH")
+
+
+class _CircuitBreakerStop(Exception):
+    """Raised to stop the runner after the breaker re-trips following its pause."""
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _weighted_pick(weights: dict[str, int], h: int) -> str:
@@ -46,6 +72,7 @@ class LiveBot:
         self.kind = kind
         self.rng = rng
         self.balance = float(balance)
+        self.start_balance = float(balance)          # stable capital base for the exposure cap
         self.aggressiveness = fleet_cfg["aggressiveness"]
         self.max_trade_coins = fleet_cfg["max_trade_coins"]
         self.min_trade_coins = fleet_cfg["min_trade_coins"]
@@ -58,6 +85,24 @@ class LiveBot:
         )
         self.ema: dict[str, float] = {}            # per-market smoothed intent
         self.pos: dict[str, dict] = {}             # per-market {YES,NO} share estimate
+        self.invested: dict[str, float] = {}       # net coins committed per market (exposure cap)
+        self._submits: deque = deque()             # monotonic submit times (per-minute rate limit)
+
+    # -- guardrail bookkeeping (no trading logic) -------------------------- #
+    def trades_in_last_minute(self, now: float) -> int:
+        while self._submits and now - self._submits[0] > 60.0:
+            self._submits.popleft()
+        return len(self._submits)
+
+    def record_submit(self, now: float) -> None:
+        self._submits.append(now)
+
+    def would_exceed_exposure(self, market_id: str, add_coins: float, cap: float) -> bool:
+        committed = self.invested.get(market_id, 0.0) + max(0.0, add_coins)
+        return committed / max(self.start_balance, 1.0) > cap
+
+    def add_invested(self, market_id: str, coins: float) -> None:
+        self.invested[market_id] = max(0.0, self.invested.get(market_id, 0.0) + coins)
 
     def intent_for(self, market_id: str, view: MarketView, signal) -> float:
         p = self.pos.get(market_id, {"YES": 0.0, "NO": 0.0})
@@ -101,6 +146,15 @@ class FleetRunner:
         self._market_news: dict[str, list] = {}    # market_id -> real headlines (latest)
         self._seen_markets: set[str] = set()
         self.stats = {"trades": 0, "comments": 0, "rejects": 0, "cycles": 0, "news_markets": 0}
+        # --- runtime safety guardrails (env-configurable; guardrails only) ---
+        self.tps_limit = _env_int("BOT_TPS_LIMIT", 10)                    # max trades/bot/min
+        self.max_exposure = _env_float("BOT_MAX_EXPOSURE_PER_MARKET", 0.5)
+        self.confidence_floor = _env_float("BOT_CONFIDENCE_FLOOR", 0.55)
+        self.breaker_threshold = _env_int("BOT_BREAKER_THRESHOLD", 5)
+        self.breaker_pause_s = _env_float("BOT_BREAKER_PAUSE_S", 30.0)
+        self.kill_file = KILL_FILE
+        self._consec_fail = 0
+        self._breaker_armed = False
 
     # -- setup ------------------------------------------------------------- #
     def setup(self) -> None:
@@ -173,12 +227,17 @@ class FleetRunner:
         pick = self.rng_hub.stream("pick")
 
         for _ in range(per_cycle):
+            if self._kill_engaged():           # near-immediate stop, always between trades
+                break
             bot = self.bots[pick.randrange(len(self.bots))]
             m = markets[pick.randrange(len(markets))]
             if pick.random() > trade_prob:
                 continue
-            view = self._view(m, cycle)
             signal = self.signals[m["id"]]
+            # guardrail: confidence floor — never trade on a low-confidence signal
+            if getattr(signal, "confidence", 0.0) < self.confidence_floor:
+                continue
+            view = self._view(m, cycle)
             intent = bot.intent_for(m["id"], view, signal)
             order = self._decide(bot, m["id"], intent)
             if order is None:
@@ -199,43 +258,103 @@ class FleetRunner:
 
     def _execute(self, bot, m, order, comment_rate, pick) -> None:
         side, outcome, amount = order
+        now = time.monotonic()
+        # --- guardrail: per-bot rate limit (max trades/bot/min) — reject, no retry
+        if bot.trades_in_last_minute(now) >= self.tps_limit:
+            self.stats["rejects"] += 1
+            return
+        # --- guardrail: max exposure per market (applies to additional BUYs)
+        if side == "BUY" and bot.would_exceed_exposure(m["id"], amount, self.max_exposure):
+            self.stats["rejects"] += 1
+            return
+        bot.record_submit(now)  # this submission counts toward the per-minute rate
+
         if side == "BUY":
             status, resp = self.client.trade(bot.user_id, m["id"], "BUY", outcome, coins=amount)
-            if status == 200:
-                bot.apply_buy(m["id"], outcome, resp["trade"]["shares"], resp["balanceAfter"])
-                self.stats["trades"] += 1
-            else:
+            self._api_result(status == 200)
+            if status != 200:
                 self.stats["rejects"] += 1
                 return
+            trade = resp.get("trade") or {}
+            shares, bal = trade.get("shares"), resp.get("balanceAfter")
+            if not isinstance(shares, (int, float)) or not isinstance(bal, (int, float)):
+                self.stats["rejects"] += 1            # malformed 200 → reject, never crash
+                return
+            bot.apply_buy(m["id"], outcome, shares, bal)
+            bot.add_invested(m["id"], float(trade.get("cost", amount) or amount))
+            self.stats["trades"] += 1
         else:
             status, resp = self.client.trade(bot.user_id, m["id"], "SELL", outcome, shares=round(amount, 4))
-            if status == 200:
-                bot.apply_sell(m["id"], outcome, amount, resp["balanceAfter"])
-                self.stats["trades"] += 1
-            else:
+            self._api_result(status == 200)
+            if status != 200:
                 self.stats["rejects"] += 1
                 return
+            bal = resp.get("balanceAfter")
+            if not isinstance(bal, (int, float)):
+                self.stats["rejects"] += 1
+                return
+            bot.apply_sell(m["id"], outcome, amount, bal)
+            bot.add_invested(m["id"], -float((resp.get("trade") or {}).get("coinsReceived", 0) or 0))
+            self.stats["trades"] += 1
+
         # Comment on a fraction of successful trades.
         if pick.random() < comment_rate:
             conviction = min(1.0, abs(bot.ema.get(m["id"], 0.3)))
             text = self.comment_gen.generate(side, outcome, conviction, m["title"], bot.rng)
             cs, _ = self.client.comment(bot.user_id, m["id"], text)
+            self._api_result(cs == 200)
             if cs == 200:
                 self.stats["comments"] += 1
+
+    # -- guardrail helpers ------------------------------------------------- #
+    def _kill_engaged(self) -> bool:
+        """Global kill switch: env BOT_KILL_SWITCH=1 or a runtime kill file.
+        (The file makes it usable against an already-running process.)"""
+        return os.environ.get("BOT_KILL_SWITCH") == "1" or os.path.exists(self.kill_file)
+
+    def _api_result(self, ok: bool) -> None:
+        """Circuit breaker over internal-API call outcomes: count consecutive
+        failures; at the threshold pause ALL bots once, then stop the runner if
+        failures continue after the pause. Any success resets it."""
+        if ok:
+            self._consec_fail = 0
+            self._breaker_armed = False
+            return
+        self._consec_fail += 1
+        if self._consec_fail >= self.breaker_threshold:
+            if not self._breaker_armed:
+                print(f"  ⚠ circuit breaker: {self._consec_fail} consecutive API failures — "
+                      f"pausing all bots {self.breaker_pause_s:.0f}s")
+                time.sleep(self.breaker_pause_s)
+                self._breaker_armed = True
+                self._consec_fail = 0
+            else:
+                print("  ⚠ circuit breaker: failures continued after pause — stopping runner")
+                raise _CircuitBreakerStop()
 
     # -- run --------------------------------------------------------------- #
     def run(self, cycles: int | None = None) -> None:
         self.setup()
+        print(f"  guardrails: kill=env:BOT_KILL_SWITCH=1|file:{os.path.relpath(self.kill_file, _REPO_ROOT)} · "
+              f"rate={self.tps_limit}/bot/min · max_exposure={self.max_exposure:.0%}/market · "
+              f"confidence_floor={self.confidence_floor:.2f} · breaker={self.breaker_threshold}fail/{self.breaker_pause_s:.0f}s")
         interval = self.cfg["pacing"]["cycle_interval_s"]
         cycle = 0
         try:
             while cycles is None or cycle < cycles:
+                # --- global kill switch: checked at the top of EVERY cycle ---
+                if self._kill_engaged():
+                    print("  ⛔ kill switch engaged — stopping cleanly before next cycle (no partial trades)")
+                    break
                 t0 = time.perf_counter()
-                markets = self.refresh_markets(cycle)
-                if not markets:
-                    print("  (no open markets yet — waiting)")
-                else:
-                    self.step(cycle, markets)
+                try:
+                    markets = self.refresh_markets(cycle)
+                    if not markets:
+                        print("  (no open markets yet — waiting)")
+                    else:
+                        self.step(cycle, markets)
+                except _CircuitBreakerStop:
+                    break          # breaker escalated to stop — clean shutdown
                 self.stats["cycles"] += 1
                 if cycle % 5 == 0 or cycles is not None:
                     avg = sum(b.balance for b in self.bots) / len(self.bots)

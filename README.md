@@ -108,7 +108,8 @@ bots/
 │   ├── inference/             # ── THE PLUGGABLE INFERENCE LAYER ──
 │   │   ├── base.py            #    InferenceClient ABC + standardized schemas
 │   │   ├── local_heuristic.py #    offline, deterministic backend (no GPU/net)
-│   │   ├── remote.py          #    FinBERTAPIClient + QwenAPIClient (HTTP)
+│   │   ├── remote.py          #    FinBERT + Qwen adapters (custom + OpenAI/chat)
+│   │   ├── openai_chat.py     #    shared OpenAI /chat/completions client (PodStack)
 │   │   ├── replay.py          #    ReplayInferenceClient (deterministic re-runs)
 │   │   ├── caching.py         #    per-tick dedup → enforces "no per-bot inference"
 │   │   └── factory.py         #    composite router + build_inference_client()
@@ -270,6 +271,39 @@ inference:
 URLs come from **environment variables** (`${VAR:-default}`), so hosts/secrets
 are injected at deploy time and never hardcoded.
 
+### Real hosted Qwen — OpenAI-compatible (`qwen_openai`, e.g. PodStack)
+
+`qwen_api` speaks the project's custom `{"task": ...}` contract (the reference
+server below). To use a **hosted Qwen behind the OpenAI `/v1/chat/completions`
+protocol** (Bearer key + a `model` id) — e.g. PodStack — switch the backend type
+to `qwen_openai`:
+
+```yaml
+inference:
+  event_backend:     qwen_openai
+  reasoning_backend: qwen_openai
+  qwen_openai:
+    type: qwen_openai
+    url:     "${QWEN_OPENAI_URL:-https://cloud.podstack.ai/api/v1/podvirt/chat/completions}"
+    api_key: "${QWEN_API_KEY:-}"          # never commit the key — use env / .env
+    model:   "${QWEN_MODEL:-qwen25-05b-instruct}"
+    timeout_s: 20
+```
+
+```bash
+export QWEN_OPENAI_URL="https://cloud.podstack.ai/api/v1/podvirt/chat/completions"
+export QWEN_API_KEY="psk_…"               # your PodStack key
+export QWEN_MODEL="qwen25-05b-instruct"   # the served model id
+```
+
+The adapter prompts the model for **strict JSON** and normalizes it into the same
+schemas as every other backend, so nothing downstream changes. It auto-falls back
+to the local heuristic if the endpoint is unreachable (`remote_fallback_local`).
+The same key/model also drive the live fleet's **LLM comments** and **news
+relevance refine** (`config.live.yaml`), and can be set with **zero config edits**
+from the admin **Model Endpoints** card (URL + key + model → applies to the
+running sim immediately, persists for the live fleet). See [`.env.example`](.env.example).
+
 ### Deployment Mode A ↔ Mode B (config only, no code changes)
 
 | | What changes |
@@ -308,16 +342,28 @@ backend's raw output is forced into shape):
 ```
 
 Adapters provided: `LocalHeuristicClient` (offline), `FinBERTAPIClient` (remote
-sentiment), `QwenAPIClient` (remote reasoning/events), `ReplayInferenceClient`.
-A `CompositeInferenceClient` routes each method to its configured backend, and a
-`CachingInferenceClient` memoizes per tick.
+sentiment), `QwenAPIClient` (remote reasoning/events, custom contract),
+`QwenChatClient` (remote reasoning/events over OpenAI `/v1/chat/completions`, e.g.
+PodStack), `ReplayInferenceClient`. A `CompositeInferenceClient` routes each method
+to its configured backend, and a `CachingInferenceClient` memoizes per tick.
 
-### Remote server contract (the friend's machine)
+### Remote server contract (the friend's machine — `qwen_api`)
 
 ```
 POST /finbert   {"text": "..."}                       → sentiment schema
 POST /qwen      {"task":"reasoning"|"event"|"sentiment", "prompt"/"text":"..."} → event/sentiment schema
 ```
+
+### Hosted contract (`qwen_openai`) — OpenAI chat completions
+
+```
+POST {url}   Authorization: Bearer {api_key}
+{"model": "<id>", "messages": [{"role":"system","content":"…strict-JSON instruction"},
+                                {"role":"user","content":"<headline | state prompt>"}]}
+→ {"choices":[{"message":{"content":"{\"event\":…,\"impact\":{…},\"confidence\":…}"}}]}
+```
+The adapter parses `choices[0].message.content` (tolerating prose / ```json fences)
+and normalizes it — see `sim/inference/openai_chat.py` + `QwenChatClient`.
 
 A runnable reference lives in `inference_server/server.py` (FastAPI). It uses
 real FinBERT/Qwen if installed and falls back to a heuristic otherwise, so the

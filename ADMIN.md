@@ -43,15 +43,24 @@ runtime — no restart, no config edit:
 - **Qwen URL** — applied to the running simulation **immediately** (per-tick
   shared reasoning routes through Qwen; high-volume per-headline sentiment stays
   on the local heuristic so Qwen isn't hammered). Empty → local heuristic.
+- **API key + model** (next to the Qwen URL) — for a **hosted, OpenAI-compatible
+  Qwen** (e.g. PodStack at `…/chat/completions`). When a key is set, or the URL is
+  a `/chat/completions` endpoint, the panel uses the OpenAI chat protocol
+  (Bearer auth + `model` id) instead of the legacy custom server — auto-detected,
+  no toggle. A bare `http://host:8002/qwen` with no key still uses the custom
+  contract. The key is **never echoed back** (a masked hint is shown); leave the
+  box blank on Save to keep the saved key.
 - **Embedding URL** — the news relevance cheap-filter's semantic backend. Empty →
   local lexical hashing.
 - **Test** buttons ping each endpoint (`POST /models/test`) and show
-  reachable/latency or the error — no lock held, so the sim keeps ticking.
-- Both are **persisted** to `runs/model_endpoints.json`, which `run_live.py`
-  reads on start, so the **live Kalki fleet** uses the same Qwen (reasoning +
-  LLM comments + relevance refine) and embedding endpoints. Admin settings
-  override config/env. `remote_fallback_local` keeps everything running if an
-  endpoint is unreachable.
+  reachable/latency + the protocol (`openai`/`custom`), or the error — no lock
+  held, so the sim keeps ticking. The Qwen test makes a real Bearer-authed chat
+  completion when in OpenAI mode.
+- All settings are **persisted** to `runs/model_endpoints.json` (gitignored — it
+  may hold the key), which `run_live.py` reads on start, so the **live Kalki
+  fleet** uses the same Qwen (reasoning + LLM comments + relevance refine) and
+  embedding endpoints. Admin settings override config/env. `remote_fallback_local`
+  keeps everything running if an endpoint is unreachable.
 
 Verified live with 1000 bots: price chart renders the bubble→crash→recovery,
 analytics rank personalities (contrarian wins, herd loses), trades stream at

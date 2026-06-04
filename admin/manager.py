@@ -33,6 +33,7 @@ from collections import deque
 from sim.bots import build_population
 from sim.config import load_config
 from sim.inference import build_inference_client
+from sim.inference.openai_chat import OpenAIChatClient, OpenAIChatError, is_openai_style
 from sim.market import build_market
 from sim.news import build_news_source
 from sim.rng import RngHub
@@ -78,10 +79,15 @@ class LiveSimulation:
         self._replay_idx = 0
         self._replay_path: str | None = None
 
-        # model endpoints (both optional) — admin can set these at runtime so the
+        # model endpoints (all optional) — admin can set these at runtime so the
         # bots use a real Qwen / embedding model. Empty → local heuristic/hashing.
+        # A Qwen URL may be the legacy custom server OR an OpenAI-compatible
+        # chat endpoint (e.g. PodStack): when an api_key/model is given (or the
+        # URL ends in /chat/completions) the OpenAI protocol is used.
         # Initial value: env, then any value the admin persisted earlier.
-        self.qwen_url = os.environ.get("QWEN_URL", "").strip()
+        self.qwen_url = os.environ.get("QWEN_URL", os.environ.get("QWEN_OPENAI_URL", "")).strip()
+        self.qwen_api_key = os.environ.get("QWEN_API_KEY", "").strip()
+        self.qwen_model = os.environ.get("QWEN_MODEL", "").strip()
         self.embedding_url = os.environ.get("EMBED_URL", "").strip()
         self._endpoint_status: dict[str, dict | None] = {"qwen": None, "embedding": None}
         self._load_endpoints()
@@ -128,13 +134,27 @@ class LiveSimulation:
         per-tick (shared) reasoning through it — bounded, one call/tick — and
         keep the high-volume per-headline sentiment/event on the local heuristic.
         Empty Qwen URL → fully local. ``remote_fallback_local`` keeps the sim
-        alive if the endpoint is unreachable."""
+        alive if the endpoint is unreachable.
+
+        The Qwen URL is auto-detected: an OpenAI-compatible chat endpoint (a key
+        or model is set, or the URL is ``.../chat/completions``) uses the
+        ``qwen_openai`` backend; anything else uses the legacy ``qwen_api``."""
         if self.qwen_url:
+            if is_openai_style(self.qwen_url, self.qwen_api_key):
+                backend = {
+                    "type": "qwen_openai", "url": self.qwen_url,
+                    "api_key": self.qwen_api_key, "model": self.qwen_model,
+                    "timeout_s": 20, "retries": 1,
+                }
+                name = "qwen_openai"
+            else:
+                backend = {"type": "qwen_api", "url": self.qwen_url, "timeout_s": 20, "retries": 1}
+                name = "qwen_api"
             return build_inference_client({
                 "sentiment_backend": "local_heuristic",
                 "event_backend": "local_heuristic",
-                "reasoning_backend": "qwen_api",
-                "qwen_api": {"type": "qwen_api", "url": self.qwen_url, "timeout_s": 20, "retries": 1},
+                "reasoning_backend": name,
+                name: backend,
                 "local_heuristic": {"type": "local_heuristic"},
                 "remote_fallback_local": True,
                 "cache": {"enabled": True, "scope": "tick"},
@@ -151,35 +171,74 @@ class LiveSimulation:
             with open(self._endpoints_file(), "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             self.qwen_url = (data.get("qwen_url") or self.qwen_url or "").strip()
+            self.qwen_api_key = (data.get("qwen_api_key") or self.qwen_api_key or "").strip()
+            self.qwen_model = (data.get("qwen_model") or self.qwen_model or "").strip()
             self.embedding_url = (data.get("embedding_url") or self.embedding_url or "").strip()
         except (OSError, ValueError):
             pass
 
     def _persist_endpoints(self) -> None:
+        # NOTE: this file (runs/model_endpoints.json) is gitignored — it may hold
+        # the private Qwen API key, so it must never be committed.
         try:
             os.makedirs(os.path.dirname(self._endpoints_file()), exist_ok=True)
             with open(self._endpoints_file(), "w", encoding="utf-8") as fh:
-                json.dump({"qwen_url": self.qwen_url, "embedding_url": self.embedding_url}, fh, indent=2)
+                json.dump({
+                    "qwen_url": self.qwen_url,
+                    "qwen_api_key": self.qwen_api_key,
+                    "qwen_model": self.qwen_model,
+                    "embedding_url": self.embedding_url,
+                }, fh, indent=2)
         except OSError:
             pass
 
-    def set_model_endpoints(self, qwen_url=None, embedding_url=None) -> None:
-        """Set/clear the Qwen and/or embedding URLs (call under the sim lock).
-        Applies the Qwen URL to THIS sim's inference immediately and persists both
-        so the live fleet (run_live.py) picks them up on its next start."""
+    def set_model_endpoints(self, qwen_url=None, embedding_url=None,
+                            qwen_api_key=None, qwen_model=None) -> None:
+        """Set/clear the Qwen (URL/key/model) and/or embedding URL (call under the
+        sim lock). Applies the Qwen settings to THIS sim's inference immediately
+        and persists all of them so the live fleet (run_live.py) picks them up on
+        its next start. Only non-None args change; pass "" to clear a field."""
         if qwen_url is not None:
             self.qwen_url = qwen_url.strip()
+        if qwen_api_key is not None:
+            self.qwen_api_key = qwen_api_key.strip()
+        if qwen_model is not None:
+            self.qwen_model = qwen_model.strip()
         if embedding_url is not None:
             self.embedding_url = embedding_url.strip()
         self.inference = self._make_inference()   # apply Qwen to the running sim now
         self._persist_endpoints()
 
-    def test_endpoint(self, kind: str, url: str) -> dict:
-        """Ping a model endpoint (no sim lock needed). kind: 'qwen' | 'embedding'."""
+    def test_endpoint(self, kind: str, url: str, api_key: str | None = None,
+                      model: str | None = None) -> dict:
+        """Ping a model endpoint (no sim lock needed). kind: 'qwen' | 'embedding'.
+
+        For a Qwen URL, an OpenAI-compatible chat endpoint (key/model present, or
+        ``.../chat/completions``) is probed with a real Bearer-authed chat
+        completion; the legacy custom server is probed with ``{"task": ...}``.
+        Omitted key/model fall back to the saved values so 'Test' works after a
+        Save without re-typing the secret."""
         url = (url or "").strip()
         if not url:
             return {"ok": False, "error": "empty url"}
         t0 = time.perf_counter()
+
+        if kind == "qwen":
+            key = (api_key if api_key is not None else self.qwen_api_key) or ""
+            mdl = (model if model is not None else self.qwen_model) or ""
+            if is_openai_style(url, key):
+                try:
+                    reply = OpenAIChatClient(
+                        url=url, api_key=key, model=mdl, timeout_s=8, retries=0,
+                    ).chat("", "Reply with the single word: ok", max_tokens=8)
+                    res = {"ok": bool(reply.strip()),
+                           "latency_ms": round((time.perf_counter() - t0) * 1000),
+                           "protocol": "openai", "sample": reply.strip()[:60]}
+                except (OpenAIChatError, ValueError) as e:
+                    res = {"ok": False, "error": str(e)[:140], "protocol": "openai"}
+                self._endpoint_status[kind] = res
+                return res
+
         payload = ({"texts": ["connectivity test"]} if kind == "embedding"
                    else {"task": "reasoning", "prompt": "connectivity test"})
         try:
@@ -188,20 +247,27 @@ class LiveSimulation:
             with urllib.request.urlopen(req, timeout=8) as r:
                 body = json.loads(r.read() or b"{}")
             ok = ("vectors" in body or "embeddings" in body) if kind == "embedding" else isinstance(body, (dict, list))
-            res = {"ok": bool(ok), "latency_ms": round((time.perf_counter() - t0) * 1000)}
+            res = {"ok": bool(ok), "latency_ms": round((time.perf_counter() - t0) * 1000),
+                   "protocol": "custom"}
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError) as e:
             res = {"ok": False, "error": str(e)[:120]}
         self._endpoint_status[kind] = res
         return res
 
     def model_status(self) -> dict:
+        openai = is_openai_style(self.qwen_url, self.qwen_api_key)
+        key = self.qwen_api_key
         return {
             "qwen_url": self.qwen_url,
+            "qwen_model": self.qwen_model,
+            "qwen_protocol": "openai" if (self.qwen_url and openai) else ("custom" if self.qwen_url else None),
+            "qwen_key_set": bool(key),
+            "qwen_key_masked": (key[:4] + "…" + key[-4:]) if len(key) >= 8 else ("set" if key else ""),
             "embedding_url": self.embedding_url,
-            "qwen_backend": "qwen (remote)" if self.qwen_url else "local heuristic",
+            "qwen_backend": ("qwen (OpenAI/chat)" if openai else "qwen (custom)") if self.qwen_url else "local heuristic",
             "embedding_backend": "remote model" if self.embedding_url else "local hashing",
             "last_test": self._endpoint_status,
-            "note": "Qwen applies to this simulation now; both persist for the live fleet.",
+            "note": "Qwen applies to this simulation now; all settings persist for the live fleet.",
         }
 
     # ------------------------------------------------------------ lifecycle

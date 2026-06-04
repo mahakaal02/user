@@ -149,8 +149,12 @@
     <div class="card">
       <h3>Model endpoints <span class="muted">(optional)</span></h3>
       <div class="field"><label>Qwen URL · <span id="qwenBadge" class="pill">local</span></label>
-        <div class="ctl" style="gap:6px"><input id="qwenUrl" type="text" placeholder="http://host:8002/qwen" style="flex:1">
+        <div class="ctl" style="gap:6px"><input id="qwenUrl" type="text" placeholder="https://cloud.podstack.ai/api/v1/podvirt/chat/completions" style="flex:1">
         <button id="qwenTest" class="sm">Test</button></div>
+        <div class="ctl" style="gap:6px;margin-top:4px">
+          <input id="qwenKey" type="password" placeholder="API key (psk_… · only for OpenAI/chat endpoints)" style="flex:1" autocomplete="off">
+          <input id="qwenModel" type="text" placeholder="model id" style="width:38%">
+        </div>
       </div>
       <div class="field"><label>Embedding URL · <span id="embBadge" class="pill">local</span></label>
         <div class="ctl" style="gap:6px"><input id="embUrl" type="text" placeholder="http://host:8003/embed" style="flex:1">
@@ -395,20 +399,32 @@ function mbadge(el, on, okText){ el.textContent = on?okText:'local'; el.classNam
 function loadModels(){
   api.get('/models').then(m=>{
     if(document.activeElement!==$('#qwenUrl')) $('#qwenUrl').value = m.qwen_url||'';
+    if(document.activeElement!==$('#qwenModel')) $('#qwenModel').value = m.qwen_model||'';
     if(document.activeElement!==$('#embUrl')) $('#embUrl').value = m.embedding_url||'';
-    mbadge($('#qwenBadge'), !!m.qwen_url, 'qwen');
+    // Never echo the secret back; show a masked hint and keep the box empty so
+    // an unchanged Save leaves the saved key intact.
+    $('#qwenKey').placeholder = m.qwen_key_set ? (m.qwen_key_masked||'••••')+' saved · blank = keep'
+                                               : 'API key (psk_… · only for OpenAI/chat endpoints)';
+    mbadge($('#qwenBadge'), !!m.qwen_url, m.qwen_protocol==='openai'?'qwen·chat':'qwen');
     mbadge($('#embBadge'), !!m.embedding_url, 'remote');
   });
 }
 $('#modelsSave').onclick=()=>{
   $('#modelsMsg').textContent='saving…';
-  api.post('/models',{qwen_url:$('#qwenUrl').value.trim(), embedding_url:$('#embUrl').value.trim()})
-    .then(()=>{ loadModels(); $('#modelsMsg').textContent='saved · Qwen live in sim now, both used by live fleet'; });
+  const payload={ qwen_url:$('#qwenUrl').value.trim(), qwen_model:$('#qwenModel').value.trim(),
+                  embedding_url:$('#embUrl').value.trim() };
+  const k=$('#qwenKey').value.trim();
+  if(k) payload.qwen_api_key=k;            // only send when typed → blank keeps the saved key
+  api.post('/models',payload)
+    .then(()=>{ $('#qwenKey').value=''; loadModels(); $('#modelsMsg').textContent='saved · Qwen live in sim now, all used by live fleet'; });
 };
 function testEndpoint(kind, url, badgeEl){
   $('#modelsMsg').textContent='testing '+kind+'…';
-  api.post('/models/test',{kind, url}).then(r=>{
-    $('#modelsMsg').textContent = kind+': '+(r.ok?('reachable '+(r.latency_ms||'?')+'ms'):('FAILED '+(r.error||'')));
+  const req={kind, url};
+  if(kind==='qwen'){ const k=$('#qwenKey').value.trim(); if(k) req.api_key=k; req.model=$('#qwenModel').value.trim(); }
+  api.post('/models/test',req).then(r=>{
+    const proto = r.protocol? ' ['+r.protocol+']':'';
+    $('#modelsMsg').textContent = kind+proto+': '+(r.ok?('reachable '+(r.latency_ms||'?')+'ms'):('FAILED '+(r.error||'')));
     badgeEl.style.color = r.ok?'var(--grn)':'var(--red)';
   });
 }

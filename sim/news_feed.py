@@ -32,6 +32,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from .embeddings import build_embedder, cosine
+from .inference.openai_chat import OpenAIChatClient, OpenAIChatError, is_openai_style
 
 _UA = "Mozilla/5.0 (compatible; KalkiNewsFleet/1.0)"
 
@@ -130,7 +131,8 @@ class RelevanceFilter:
     def __init__(self, backend: str = "keyword", threshold: float = 0.34,
                  min_cosine: float = 0.15, top_k: int = 6, embedder=None,
                  refine_enabled: bool = False, refine_qwen_url: str | None = None,
-                 refine_min_score: float = 0.5, timeout_s: float = 10.0) -> None:
+                 refine_min_score: float = 0.5, timeout_s: float = 10.0,
+                 refine_api_key: str | None = None, refine_model: str | None = None) -> None:
         self.backend = backend            # "embeddings" | "keyword"
         self.threshold = threshold        # keyword floor
         self.min_cosine = min_cosine      # embeddings floor
@@ -138,6 +140,8 @@ class RelevanceFilter:
         self.embedder = embedder
         self.refine_enabled = refine_enabled
         self.refine_qwen_url = refine_qwen_url
+        self.refine_api_key = refine_api_key or ""   # set → OpenAI-style refine
+        self.refine_model = refine_model or ""
         self.refine_min_score = refine_min_score
         self.timeout = timeout_s
 
@@ -164,6 +168,10 @@ class RelevanceFilter:
 
     # -- stage 2: LLM refinement (over the top-K only) --------------------- #
     def _llm_refine(self, market_title: str, headline: str) -> float:
+        """Relevance score 0..1 of a headline to a market. On any refiner failure
+        return 1.0 so the embedding/keyword pick is kept (never drop on error)."""
+        if is_openai_style(self.refine_qwen_url, self.refine_api_key):
+            return self._llm_refine_openai(market_title, headline)
         try:
             payload = json.dumps({"task": "relevance", "market": market_title, "headline": headline}).encode()
             req = urllib.request.Request(self.refine_qwen_url, data=payload, method="POST",
@@ -172,6 +180,25 @@ class RelevanceFilter:
                 return float(json.loads(r.read() or b"{}").get("score", 0.0))
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError):
             return 1.0  # don't drop on refiner failure — keep the embedding pick
+
+    def _llm_refine_openai(self, market_title: str, headline: str) -> float:
+        """OpenAI-compatible chat endpoint (e.g. PodStack): rate relevance 0..1."""
+        sys = ("You score how relevant a news headline is to a prediction market, "
+               'as a number 0.0-1.0. Respond with ONLY JSON: {"score": 0.0-1.0}.')
+        user = f"Market: {market_title}\nHeadline: {headline}"
+        try:
+            reply = OpenAIChatClient(
+                url=self.refine_qwen_url, api_key=self.refine_api_key, model=self.refine_model,
+                timeout_s=self.timeout, retries=1, temperature=0.0, max_tokens=24,
+            ).chat(sys, user, response_format_json=True)
+            s = reply.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            try:
+                return float(json.loads(s).get("score", 0.0))
+            except (ValueError, AttributeError):
+                m = re.search(r"[01](?:\.\d+)?", s)  # tolerate a bare number reply
+                return float(m.group(0)) if m else 1.0
+        except (OpenAIChatError, ValueError):
+            return 1.0  # keep the embedding pick on failure
 
     def rank(self, query: str, market_title: str, items: list[dict], max_items: int) -> list[str]:
         if not items:
@@ -291,6 +318,8 @@ def build_market_news_feed(cfg: dict):
         embedder=embedder,
         refine_enabled=refine_cfg.get("enabled", False),
         refine_qwen_url=refine_cfg.get("qwen_url") or None,
+        refine_api_key=refine_cfg.get("api_key") or None,
+        refine_model=refine_cfg.get("model") or None,
         refine_min_score=refine_cfg.get("min_score", 0.5),
     )
     return MarketNewsFeed(
